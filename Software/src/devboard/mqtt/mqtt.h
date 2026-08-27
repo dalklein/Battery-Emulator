@@ -65,4 +65,21 @@ bool init_mqtt(void);
 void mqtt_client_loop(void);
 bool mqtt_publish(const char* topic, const char* mqtt_msg, bool retain);
 
+/* Subscribe to a topic outside the emulator's own tree.
+ *
+ * The emulator subscribes to "<hostname>/command/+" for its own buttons. Modules that
+ * need to CONSUME data -- an inverter protocol mirroring a real battery's registers
+ * published by another device, say -- had no way to ask for a topic.
+ *
+ * Register before init_mqtt(); subscriptions are (re)issued on every broker connect, so
+ * they survive reconnects. The handler runs on the MQTT task: keep it short, and do not
+ * block or touch the shared mqtt_msg / shared_doc buffers, which are single-threaded by
+ * contract.
+ *
+ * `filter` may contain MQTT wildcards (+ and #) and must remain valid for the lifetime
+ * of the program (a string literal is the intended use).
+ */
+typedef void (*MqttTopicHandler)(const char* topic, int topic_len, const char* data, int data_len);
+bool mqtt_register_subscription(const char* filter, MqttTopicHandler handler);
+
 #endif

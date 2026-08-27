@@ -74,6 +74,7 @@ add_executable(tests
     inverter_alive_tests.cpp
     modbus_fc06_tests.cpp
     lg_resu_replay_tests.cpp
+    mqtt_topic_match_tests.cpp
     millis_wrap_tests.cpp
     estop_graceful_open_tests.cpp
     contactor_sequence_tests.cpp

@@ -1,4 +1,5 @@
 #include "mqtt.h"
+#include "../utils/mqtt_topic_match.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
@@ -965,11 +966,49 @@ static bool publish_buttons_discovery(void) {
   return true;
 }
 
+// Extra subscriptions requested by other modules via mqtt_register_subscription().
+// Fixed capacity: this is a handful of well-known topics, not a general broker client,
+// and a static array avoids heap churn on the MQTT task.
+namespace {
+constexpr size_t kMaxExtraSubscriptions = 4;
+struct ExtraSubscription {
+  const char* filter;
+  MqttTopicHandler handler;
+};
+ExtraSubscription extra_subscriptions[kMaxExtraSubscriptions];
+size_t extra_subscription_count = 0;
+
+}  // namespace
+
+
+
+bool mqtt_register_subscription(const char* filter, MqttTopicHandler handler) {
+  if (!filter || !handler || extra_subscription_count >= kMaxExtraSubscriptions) {
+    return false;
+  }
+  extra_subscriptions[extra_subscription_count++] = {filter, handler};
+  return true;
+}
+
 static void subscribe() {
   esp_mqtt_client_subscribe(client, (topic_name + "/command/+").c_str(), 1);
+  for (size_t i = 0; i < extra_subscription_count; i++) {
+    esp_mqtt_client_subscribe(client, extra_subscriptions[i].filter, 1);
+  }
 }
 
 void mqtt_message_received(char* topic_raw, int topic_len, char* data, int data_len) {
+
+  // Dispatch to modules that registered their own subscriptions first: those topics are
+  // outside the emulator's command tree, and consumers (an inverter mirroring a real
+  // battery's registers, say) can arrive at high rate. Handled before strndup() so the
+  // hot path does not allocate.
+  for (size_t i = 0; i < extra_subscription_count; i++) {
+    if (mqtt_topic_matches(extra_subscriptions[i].filter, topic_raw, topic_len)) {
+      extra_subscriptions[i].handler(topic_raw, topic_len, data, data_len);
+      return;
+    }
+  }
 
   char* topic = strndup(topic_raw, topic_len);
 
