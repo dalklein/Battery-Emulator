@@ -62,6 +62,21 @@ int16_t clamp_i16(int32_t v) {
 bool LgResuPrimeModbusInverter::setup() {
   publish_identity();
   publish_alarms();
+
+  /* Mirror mode on by default for this protocol.
+   *
+   * The registers this emulator must serve are a real pack's, republished by whatever is
+   * mastering it (iot-rpi's lg_master.py). Deriving them from the datalayer instead means
+   * serving whichever battery driver happens to be selected, and those values are not
+   * self-consistent against this map -- a TestFake battery reports 206 = 23583 Wh against
+   * a 9600 Wh nameplate, i.e. an SOC of 248 %.
+   *
+   * Turn it off (mirror_enabled() == false) only for milestones 4-5, where a Leaf pack is
+   * the real thing and the datalayer IS the source of truth. Until MQTT delivers anything
+   * the mirror is stale, so all power limits read 0 and the inverter is asked to move
+   * nothing -- which is the right state to boot into.
+   */
+  enable_mirror(kDefaultMirrorTopic);
   return true;
 }
 

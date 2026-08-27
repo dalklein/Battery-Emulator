@@ -91,7 +91,12 @@ class LgResuPrimeModbusInverter : public ModbusInverterProtocol {
    * Topic form: <prefix>/lg_<reg>/state, e.g. lg/master/sensor/lg_201/state
    */
   bool enable_mirror(const char* topic_filter);
+  // Matches the default of pi_rs485_sniffer/scripts/lg_master.py
+  static constexpr const char* kDefaultMirrorTopic = "lg/master/sensor/+/state";
   bool mirror_enabled() const { return mirror_on; }
+  // Milestones 4-5: a Leaf pack is the real thing and the datalayer is the truth.
+  // The MQTT subscription stays registered but its data is ignored.
+  void disable_mirror() { mirror_on = false; }
   bool mirror_is_fresh() const;
 
   // How long mirrored data may go unrefreshed before the emulator stops asking the

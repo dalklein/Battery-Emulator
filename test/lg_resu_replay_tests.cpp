@@ -200,6 +200,7 @@ TEST(LgResuReplay, DerivedRegister226MatchesTheRealBattery) {
   // Nothing in a host test can distinguish them; only a real two-sided pack would.
   ReplayInverter inv;
   inv.setup();
+  inv.disable_mirror();  // this exercises the datalayer path, not the mirror
 
   // Recover real (213, 215, 226) triples from the capture. 213x9 covers 213..221 and
   // 222x8 covers 222..229, so both reads are needed for one triple.
@@ -282,8 +283,8 @@ TEST(LgResuMirror, ServesTheRealBatterysRegistersVerbatim) {
   current_time = 100000;
   mqtt_test_reset_subscriptions();
   ReplayInverter inv;
-  inv.setup();
-  ASSERT_TRUE(inv.enable_mirror("lg/master/sensor/+/state"));
+  inv.setup();  // enables mirror on the default topic
+  ASSERT_TRUE(inv.mirror_enabled()) << "mirror must be on by default for this protocol";
   ASSERT_EQ(mqtt_test_subscription_count(), 1u);
 
   // Collect the real battery's register values, then publish them as the Pi would.
