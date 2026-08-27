@@ -21,6 +21,7 @@
 #include "src/devboard/mqtt/mqtt.h"
 #include "src/devboard/safety/parallel_safety.h"
 #include "src/devboard/sdcard/sdcard.h"
+#include "src/devboard/utils/enable_sense.h"
 #include "src/devboard/utils/events.h"
 #include "src/devboard/utils/led_handler.h"
 #include "src/devboard/utils/logging.h"
@@ -613,6 +614,7 @@ void core_loop(void*) {
     // Input, Runs as fast as possible
     receive_can();    // Receive CAN messages
     receive_rs485();  // Process serial2 RS485 interface
+    enable_sense_loop();  // Debounce + publish the inverter's 12 V enable line
 
     END_TIME_MEASUREMENT_MAX(comm, datalayer.system.status.time_comm_us);
 
@@ -821,6 +823,11 @@ void setup() {
       logging.println("MQTT failed to initialize. MQTT will be disabled.");
     }
   }
+
+  // Delta 12 V battery-enable sense. Independent of which inverter protocol is selected, so
+  // the line can be measured before the Delta module exists. No-op on boards whose HAL
+  // defines no INVERTER_CONTACTOR_ENABLE_PIN.
+  enable_sense_init();
 
   xTaskCreatePinnedToCore((TaskFunction_t)&core_loop, "core_loop", 4096, NULL, TASK_CORE_PRIO, &main_loop_task,
                           esp32hal->CORE_FUNCTION_CORE());
