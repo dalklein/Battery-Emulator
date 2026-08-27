@@ -1,7 +1,10 @@
 #include "LG-RESU-PRIME-MODBUS.h"
 
 #include "../datalayer/datalayer.h"
+#include "../communication/rs485/comm_rs485.h"
+#include "../devboard/hal/hal.h"
 #include "../devboard/mqtt/mqtt.h"
+#include "../lib/eModbus-eModbus/RTUutils.h"
 #include "../devboard/utils/logging.h"
 
 #include <stdlib.h>
@@ -62,6 +65,24 @@ int16_t clamp_i16(int32_t v) {
 bool LgResuPrimeModbusInverter::setup() {
   publish_identity();
   publish_alarms();
+
+  /* Bind the Modbus server to the RS485 UART.
+   *
+   * Registering the FC03/FC06 workers (done by the base constructor) only makes this
+   * object CAPABLE of answering -- nothing is listening on the wire until the RTU server
+   * is started on Serial2. Omitting this is silent: the emulator boots, reports healthy,
+   * mirrors registers, and answers nothing, because no bytes ever reach it.
+   *
+   * The host replay tests call FC03/FC06 directly and so cannot catch it -- they exercise
+   * the protocol logic and bypass the transport entirely.
+   */
+  RTUutils::prepareHardwareSerial(Serial2);
+  if (!rs485_begin(Name, Serial2, 9600, SERIAL_8N1)) {
+    logging.println("LG RESU: rs485_begin() failed -- the emulator will not answer");
+    return false;
+  }
+  MBserver.begin(Serial2, esp32hal->MODBUS_CORE());
+  logging.println("LG RESU: Modbus RTU server listening on Serial2 @ 9600 8N1, id 15");
 
   /* Mirror mode on by default for this protocol.
    *
