@@ -4,6 +4,7 @@
 #include "../communication/rs485/comm_rs485.h"
 #include "../devboard/hal/hal.h"
 #include "../devboard/mqtt/mqtt.h"
+#include "../devboard/utils/enable_sense.h"
 #include "../lib/eModbus-eModbus/RTUutils.h"
 #include "../devboard/utils/logging.h"
 
@@ -83,6 +84,19 @@ bool LgResuPrimeModbusInverter::setup() {
   }
   MBserver.begin(Serial2, esp32hal->MODBUS_CORE());
   logging.println("LG RESU: Modbus RTU server listening on Serial2 @ 9600 8N1, id 15");
+
+  /* Let the 12 V enable line drive readiness.
+   *
+   * 201 is derived from datalayer.system.status.inverter_allows_contactor_closing, which
+   * DEFAULTS TO TRUE. Without something driving it the emulator reports the pack active
+   * even with the enable line low -- measured against the real pack, which reports 1
+   * (standby) in exactly that state.
+   *
+   * enable_sense already watches the pin; this opts it into writing the flag. It is off by
+   * default because the flag also gates contactor closing in several battery drivers, so
+   * only a protocol that genuinely depends on the enable line should turn it on.
+   */
+  enable_sense_drive_datalayer = true;
 
   /* Mirror mode on by default for this protocol.
    *
