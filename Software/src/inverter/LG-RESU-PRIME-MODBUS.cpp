@@ -128,8 +128,17 @@ void LgResuPrimeModbusInverter::publish_telemetry() {
   mbPV[209] = discharged >> 16;
   mbPV[210] = discharged & 0xFFFF;
 
-  mbPV[215] = b.status.voltage_dV;  // pack volts -- see note in update_values()
-  mbPV[216] = static_cast<uint16_t>(clamp_i16(b.status.current_dA));  // pack amps, 0.1 A signed
+  // Pack side. With cells_in_series set, rescale by cell count so the emulator presents
+  // both sides of a converter it does not have; see the header for why this is lossless.
+  if (cells_in_series > 0) {
+    mbPV[215] = static_cast<uint16_t>((uint32_t)b.status.voltage_dV * kResuCellsInSeries /
+                                      cells_in_series);
+    mbPV[216] = static_cast<uint16_t>(
+        clamp_i16((int32_t)b.status.current_dA * cells_in_series / kResuCellsInSeries));
+  } else {
+    mbPV[215] = b.status.voltage_dV;  // no converter: one voltage, reported on both sides
+    mbPV[216] = static_cast<uint16_t>(clamp_i16(b.status.current_dA));
+  }
 
   mbPV[217] = static_cast<uint16_t>(b.status.temperature_max_dC);  // tracks ambient
   mbPV[218] = 0xFFFF;                                              // -1, "not available" sentinel

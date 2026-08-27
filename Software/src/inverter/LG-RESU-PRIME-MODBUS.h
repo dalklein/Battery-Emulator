@@ -45,6 +45,35 @@ class LgResuPrimeModbusInverter : public ModbusInverterProtocol {
   void mirror_config_writes();
 
   uint16_t state_201 = 3;  // 1 = standby, 3 = active
+
+ public:
+  /* Synthesising the pack side when there is no DC-DC.
+   *
+   * A real RESU reports BOTH sides of its internal converter: 202/220 are the
+   * inverter-facing bus (~410 V) and 215/216 the pack behind it (~170 V). A
+   * Battery-Emulator install has no converter, so without help 202 == 215 and the
+   * emulator does not look like a real pack.
+   *
+   * The simplest faithful fix is to rescale by SERIES CELL COUNT, which is really just
+   * "report the same volts-per-cell, with the RESU's cell count":
+   *
+   *     215 = 202 * kResuCellsInSeries / cells_in_series
+   *     216 = 220 * cells_in_series / kResuCellsInSeries
+   *
+   * Power is preserved exactly, so 203 == 215*216/100 and 203 == 202*220/100 both still
+   * hold, and 226 = 100*213/215 lands correctly. For a 96S Nissan Leaf at 350-400 V this
+   * yields 153-175 V, essentially the 147-174 V the real RESU was measured at -- not a
+   * coincidence, since a 3.9 V Leaf cell is a 3.9 V RESU cell.
+   *
+   * Deliberately LOSSLESS. Modelling DC-DC efficiency here would be less faithful, not
+   * more: the real RESU reports both sides reproducing 203 to about 1 %, i.e. it publishes
+   * them as if lossless. Its real losses appear only in the cumulative energy counters.
+   *
+   * Set to 0 to disable and report the bus voltage on both sides (the default, correct
+   * when a real DC-DC-equipped pack sits behind the emulator).
+   */
+  uint8_t cells_in_series = 0;
+  static constexpr uint8_t kResuCellsInSeries = 42;  // 2 modules x 21, 1P, NMC
 };
 
 #endif
