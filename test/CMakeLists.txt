@@ -72,6 +72,7 @@ add_executable(tests
     offgrid_downgrade_tests.cpp
     bms_reset_tests.cpp
     inverter_alive_tests.cpp
+    modbus_fc06_tests.cpp
     millis_wrap_tests.cpp
     estop_graceful_open_tests.cpp
     contactor_sequence_tests.cpp
