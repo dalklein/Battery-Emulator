@@ -73,6 +73,7 @@ add_executable(tests
     bms_reset_tests.cpp
     inverter_alive_tests.cpp
     modbus_fc06_tests.cpp
+    lg_resu_replay_tests.cpp
     millis_wrap_tests.cpp
     estop_graceful_open_tests.cpp
     contactor_sequence_tests.cpp
@@ -180,6 +181,7 @@ add_executable(tests
     ../Software/src/inverter/INVERTERS.cpp
     ../Software/src/inverter/KOSTAL-RS485.cpp
     ../Software/src/inverter/ModbusInverterProtocol.cpp
+    ../Software/src/inverter/LG-RESU-PRIME-MODBUS.cpp
     ../Software/src/inverter/PYLON-CAN.cpp
     ../Software/src/inverter/PYLON-LV-RS485.cpp
     ../Software/src/inverter/PYLON-LV-CAN.cpp
@@ -213,6 +215,7 @@ target_link_libraries(tests
 # Define the path for tests
 target_compile_definitions(tests PRIVATE 
     TEST_CAN_LOG_DIR="${CMAKE_SOURCE_DIR}/can_log_based/can_logs"
+    TEST_LG_RESU_DIR="${CMAKE_SOURCE_DIR}/lg_resu"
 )
 
 gtest_discover_tests(tests)
