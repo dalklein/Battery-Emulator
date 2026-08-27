@@ -1,7 +1,11 @@
 #include "LG-RESU-PRIME-MODBUS.h"
 
 #include "../datalayer/datalayer.h"
+#include "../devboard/mqtt/mqtt.h"
 #include "../devboard/utils/logging.h"
+
+#include <stdlib.h>
+#include <string.h>
 
 /* Register meanings are inference fitted to observed traffic between a Delta E6-TL-US
  * and a real LG RESU10H Prime. There is no vendor register map. Confidence per register:
@@ -178,8 +182,154 @@ void LgResuPrimeModbusInverter::publish_limits() {
   mbPV[226] = pack_dV ? static_cast<uint16_t>((uint32_t)mbPV[213] * 100 / pack_dV) : 0;
 }
 
+
+// ---------------------------------------------------------------------------
+// Mirror mode
+//
+// The MQTT handler is a plain function pointer, so the active instance is held in a
+// file-static. Only one inverter protocol exists at a time, which is what makes that safe.
+//
+// CONCURRENCY: the handler runs on the MQTT task; apply_mirror() runs on the core loop.
+// The cache is therefore a flat array of uint16_t -- naturally aligned 16-bit stores are
+// atomic on ESP32, so a reader can never see half a value. A reader CAN see two registers
+// from slightly different moments, which for telemetry is indistinguishable from ordinary
+// sampling skew and is why this needs no lock on the Modbus hot path.
+// ---------------------------------------------------------------------------
+namespace {
+
+LgResuPrimeModbusInverter* g_mirror_instance = nullptr;
+
+// Two compact windows covering everything the inverter reads: 102-142 and 201-234 in the
+// low window, 2001-2034 in the high one. A flat 2 KB array beats a std::map here because
+// it needs no allocation and no lock.
+constexpr uint16_t kLoBase = 100, kLoCount = 150;   // 100..249
+constexpr uint16_t kHiBase = 2000, kHiCount = 40;   // 2000..2039
+uint16_t mirror_lo[kLoCount], mirror_hi[kHiCount];
+bool mirror_lo_seen[kLoCount], mirror_hi_seen[kHiCount];
+volatile uint32_t mirror_last_update_ms = 0;
+// Plain assignment, not ++: incrementing a volatile is deprecated in C++20 and the
+// ESP32 build treats that as an error. We only need "has anything ever arrived".
+volatile bool mirror_any_update = false;
+
+bool mirror_store(uint16_t reg, uint16_t val) {
+  if (reg >= kLoBase && reg < kLoBase + kLoCount) {
+    mirror_lo[reg - kLoBase] = val;
+    mirror_lo_seen[reg - kLoBase] = true;
+    return true;
+  }
+  if (reg >= kHiBase && reg < kHiBase + kHiCount) {
+    mirror_hi[reg - kHiBase] = val;
+    mirror_hi_seen[reg - kHiBase] = true;
+    return true;
+  }
+  return false;  // outside the read contract; the 1100 config block is not mirrored
+}
+
+void mirror_mqtt_handler(const char* topic, int topic_len, const char* data, int data_len) {
+  // Expect <anything>/lg_<reg>/state -- pull the register out of the last "lg_" segment.
+  int i = topic_len - 1;
+  while (i >= 2 && !(topic[i - 2] == 'l' && topic[i - 1] == 'g' && topic[i] == '_')) i--;
+  if (i < 2) return;
+  const uint16_t reg = (uint16_t)atoi(topic + i + 1);
+  if (!reg || data_len <= 0 || data_len > 12) return;
+
+  char buf[13];
+  memcpy(buf, data, data_len);
+  buf[data_len] = '\0';
+  // The publisher sends signed decimals for 203, 216-220, 226-227; Modbus carries the
+  // two's-complement pattern, so a negative maps straight back onto the 16-bit word.
+  const long v = strtol(buf, nullptr, 10);
+  if (v < -32768 || v > 65535) return;
+
+  if (mirror_store(reg, (uint16_t)(v < 0 ? v + 65536 : v))) {
+    mirror_last_update_ms = millis();
+    mirror_any_update = true;
+  }
+}
+
+}  // namespace
+
+bool LgResuPrimeModbusInverter::enable_mirror(const char* topic_filter) {
+  if (!topic_filter) return false;
+  memset(mirror_lo_seen, 0, sizeof(mirror_lo_seen));
+  memset(mirror_hi_seen, 0, sizeof(mirror_hi_seen));
+  mirror_any_update = false;
+  g_mirror_instance = this;
+  if (!mqtt_register_subscription(topic_filter, mirror_mqtt_handler)) {
+    logging.println("LG mirror: could not register the MQTT subscription");
+    return false;
+  }
+  mirror_on = true;
+  logging.printf("LG mirror: serving registers from %s\n", topic_filter);
+  return true;
+}
+
+bool LgResuPrimeModbusInverter::mirror_is_fresh() const {
+  if (!mirror_any_update) return false;
+  return (millis() - mirror_last_update_ms) < kMirrorStaleMs;
+}
+
+void LgResuPrimeModbusInverter::apply_mirror() {
+  for (uint16_t i = 0; i < kLoCount; i++)
+    if (mirror_lo_seen[i]) mbPV[kLoBase + i] = mirror_lo[i];
+  for (uint16_t i = 0; i < kHiCount; i++)
+    if (mirror_hi_seen[i]) mbPV[kHiBase + i] = mirror_hi[i];
+
+  /* 201 is the exception to mirroring.
+   *
+   * It is the read side of 1101, and the INVERTER writes 1101 to us. If we served the real
+   * pack's 201 instead, the Delta would command standby and see the battery still report
+   * active -- an inconsistency a real pack never shows. So its own write wins here.
+   *
+   * ARCHITECTURAL GAP this exposes: in mirror mode the Delta's config writes reach the
+   * emulator but NOT the real battery behind it. The real pack therefore never receives
+   * its graceful 1101<-1 shutdown command. Relaying those writes through to the master is
+   * an open piece of milestone 2; until it exists, iot-rpi must manage the real pack's
+   * state itself.
+   */
+  mbPV[201] = state_201;
+
+  if (!mirror_is_fresh()) {
+    /* Stale mirrored data. Report the pack as unable to move power, rather than going
+     * silent.
+     *
+     * Silence WOULD be safe -- a Delta talking to nothing polls patiently for at least
+     * 235 s with no fault, no lockout and no retry escalation (measured 2026-08-26 with
+     * the battery physically off the bus). But silence also makes the battery vanish from
+     * the inverter's UI and tells it nothing.
+     *
+     * Zero limits keep the pack visibly present and healthy while actively asking the
+     * inverter to stop, which is the graceful degradation. A frozen SOC with live limits
+     * is the dangerous case: the inverter enforces its discharge floor from the SOC the
+     * battery reports, so a stuck value defeats that protection entirely.
+     */
+    mbPV[213] = 0;  // instantaneous allowed charge
+    mbPV[226] = 0;  // its pack-side current form
+    mbPV[229] = 0;  // peak discharge
+    mbPV[211] = 0;
+    mbPV[212] = 0;
+    mbPV[214] = 0;
+
+    static uint32_t last_warn = 0;
+    if (millis() - last_warn > 10000) {
+      last_warn = millis();
+      logging.printf("LG mirror: STALE (%lu ms since last update) -- limits forced to 0\n",
+                     (unsigned long)(millis() - mirror_last_update_ms));
+    }
+  }
+}
+
 void LgResuPrimeModbusInverter::update_values() {
   mirror_config_writes();
+
+  if (mirror_on) {
+    // Serve the real battery's registers verbatim. The datalayer mapping is skipped
+    // entirely: it cannot reproduce registers that have no datalayer equivalent, and
+    // re-deriving values we already have would only add error.
+    apply_mirror();
+    return;
+  }
+
   publish_telemetry();
   publish_limits();
 

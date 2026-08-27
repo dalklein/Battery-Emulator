@@ -88,6 +88,7 @@ add_executable(tests
     battery/UdsCanBatteryTest.cpp
     can_log_based/canlog_safety_tests.cpp
     utils/utils.cpp
+    emul/mqtt_stub.cpp
     ../Software/src/devboard/safety/parallel_safety.cpp
     ../Software/src/communication/contactorcontrol/comm_contactorcontrol.cpp
     ../Software/src/communication/rs485/comm_rs485.cpp

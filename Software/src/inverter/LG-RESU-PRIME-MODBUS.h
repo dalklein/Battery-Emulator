@@ -74,6 +74,32 @@ class LgResuPrimeModbusInverter : public ModbusInverterProtocol {
    */
   uint8_t cells_in_series = 0;
   static constexpr uint8_t kResuCellsInSeries = 42;  // 2 modules x 21, 1P, NMC
+
+  /* MIRROR MODE -- for milestones 2 and 3, where a REAL RESU is still on DC.
+   *
+   * Another device (iot-rpi) masters the real battery on its own segment and republishes
+   * every register to MQTT. With mirror mode on, this emulator serves those values
+   * verbatim instead of deriving them from the datalayer, so the inverter sees exactly
+   * what the real pack said -- including registers that have no datalayer equivalent
+   * (222-224, 228, 230, 234, 141, 142, the 32-bit energy pairs).
+   *
+   * Leave it OFF for milestones 4 and 5, where a Leaf pack is the real thing and the
+   * datalayer is the source of truth.
+   *
+   * Topic form: <prefix>/lg_<reg>/state, e.g. lg/master/sensor/lg_201/state
+   */
+  bool enable_mirror(const char* topic_filter);
+  bool mirror_enabled() const { return mirror_on; }
+  bool mirror_is_fresh() const;
+
+  // How long mirrored data may go unrefreshed before the emulator stops asking the
+  // inverter to move power. The Pi republishes on change plus a heartbeat, so a gap this
+  // long means the link, the broker, or the master is gone.
+  static constexpr uint32_t kMirrorStaleMs = 15000;
+
+ private:
+  bool mirror_on = false;
+  void apply_mirror();
 };
 
 #endif

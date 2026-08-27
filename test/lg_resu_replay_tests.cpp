@@ -239,3 +239,152 @@ TEST(LgResuReplay, DerivedRegister226MatchesTheRealBattery) {
   }
   EXPECT_GT(checked, 5) << "expected several usable (213,215,226) triples in the corpus";
 }
+
+// --- mirror mode -----------------------------------------------------------
+//
+// For milestones 2 and 3 a REAL RESU is still on DC; iot-rpi masters it and republishes
+// every register to MQTT, and the emulator serves those values verbatim. These tests use
+// the host MQTT stub to inject messages exactly as the broker would.
+
+extern void mqtt_test_reset_subscriptions();
+extern int mqtt_test_deliver(const char* topic, const char* payload);
+extern size_t mqtt_test_subscription_count();
+extern uint64_t current_time;  // emul/time.cpp -- the host's millis() source
+
+namespace {
+void feed_from_corpus(int max_regs = 1000) {
+  // Replay the real battery's register values through MQTT, as the Pi would publish them.
+  std::map<uint16_t, uint16_t> regs;
+  for (auto& e : load_corpus()) {
+    if (e.fn != 0x03) continue;
+    auto p = payload(e.rsp);
+    if ((int)p.size() < 3 + e.count * 2) continue;
+    for (uint16_t i = 0; i < e.count; i++)
+      regs[e.start + i] = (uint16_t)(p[3 + i * 2] << 8 | p[4 + i * 2]);
+  }
+  int n = 0;
+  for (auto& kv : regs) {
+    if (n++ >= max_regs) break;
+    char topic[64], val[16];
+    snprintf(topic, sizeof(topic), "lg/master/sensor/lg_%u/state", kv.first);
+    // publish signed for the registers the master publishes signed
+    const bool sgn = (kv.first == 203 || kv.first == 216 || kv.first == 218 ||
+                      kv.first == 220 || kv.first == 217 || kv.first == 219 ||
+                      kv.first == 226 || kv.first == 227);
+    snprintf(val, sizeof(val), "%d",
+             sgn && kv.second > 32767 ? (int)kv.second - 65536 : (int)kv.second);
+    mqtt_test_deliver(topic, val);
+  }
+}
+}  // namespace
+
+TEST(LgResuMirror, ServesTheRealBatterysRegistersVerbatim) {
+  current_time = 100000;
+  mqtt_test_reset_subscriptions();
+  ReplayInverter inv;
+  inv.setup();
+  ASSERT_TRUE(inv.enable_mirror("lg/master/sensor/+/state"));
+  ASSERT_EQ(mqtt_test_subscription_count(), 1u);
+
+  // Collect the real battery's register values, then publish them as the Pi would.
+  // NOTE: the corpus spans 60 s and dynamic registers change within it, so the check is
+  // "what we published comes back", not "every historical frame replays" -- comparing a
+  // single snapshot against 184 different moments would fail on live telemetry alone.
+  std::map<uint16_t, uint16_t> fed;
+  for (auto& e : load_corpus()) {
+    if (e.fn != 0x03) continue;
+    auto p = payload(e.rsp);
+    if ((int)p.size() < 3 + e.count * 2) continue;
+    for (uint16_t i = 0; i < e.count; i++)
+      fed[e.start + i] = (uint16_t)(p[3 + i * 2] << 8 | p[4 + i * 2]);
+  }
+  ASSERT_GE(fed.size(), 60u) << "expected the corpus to cover most of the read contract";
+
+  feed_from_corpus();
+  inv.update_values();
+
+  int checked = 0, no_datalayer_equivalent = 0;
+  for (auto& kv : fed) {
+    const uint16_t reg = kv.first;
+    if (reg == 201) continue;  // the inverter's own write wins; see apply_mirror()
+    ModbusMessage req(0x0F, 0x03, reg, uint16_t{1});
+    ModbusMessage rsp = inv.FC03(req);
+    auto got = bytes_of(rsp);
+    ASSERT_EQ(got.size(), 5u) << "reg " << reg;
+    EXPECT_EQ((uint16_t)(got[3] << 8 | got[4]), kv.second)
+        << "mirrored register " << reg << " does not match the real battery";
+    checked++;
+    // Registers with no datalayer equivalent -- the reason mirroring exists at all.
+    if (reg == 222 || reg == 223 || reg == 224 || reg == 228 || reg == 230 || reg == 234 ||
+        reg == 141 || reg == 142)
+      no_datalayer_equivalent++;
+  }
+  EXPECT_GT(checked, 60);
+  EXPECT_GE(no_datalayer_equivalent, 6)
+      << "mirroring must carry registers the datalayer cannot express";
+}
+
+TEST(LgResuMirror, NegativeValuesSurviveTheRoundTrip) {
+  current_time = 200000;
+  mqtt_test_reset_subscriptions();
+  ReplayInverter inv;
+  inv.setup();
+  ASSERT_TRUE(inv.enable_mirror("lg/master/sensor/+/state"));
+
+  mqtt_test_deliver("lg/master/sensor/lg_203/state", "-1002");  // discharging
+  mqtt_test_deliver("lg/master/sensor/lg_216/state", "-67");
+  mqtt_test_deliver("lg/master/sensor/lg_218/state", "-1");
+  inv.update_values();
+
+  EXPECT_EQ(inv.mbPV[203], 64534) << "-1002 W must land as its two's-complement word";
+  EXPECT_EQ(inv.mbPV[216], 65469);
+  EXPECT_EQ(inv.mbPV[218], 65535);
+}
+
+TEST(LgResuMirror, IgnoresRegistersOutsideTheReadContract) {
+  current_time = 300000;
+  mqtt_test_reset_subscriptions();
+  ReplayInverter inv;
+  inv.setup();
+  ASSERT_TRUE(inv.enable_mirror("lg/master/sensor/+/state"));
+
+  // The 1100 config block is written BY the inverter; mirroring it back would fight the
+  // 1101 -> 201 mirror and could re-assert a stale mode.
+  mqtt_test_deliver("lg/master/sensor/lg_1101/state", "1");
+  // Also publish a 201 the real pack might be reporting; the inverter's own write must win.
+  mqtt_test_deliver("lg/master/sensor/lg_201/state", "1");
+  inv.update_values();
+  EXPECT_EQ(inv.mbPV[201], 3)
+      << "201 is the read side of 1101, which the INVERTER writes -- its own command wins "
+         "over anything the real pack reports, or it would command standby and see active";
+  EXPECT_EQ(inv.mbPV.count(1101), 0u) << "the 1100 config block must not be mirrored back";
+}
+
+TEST(LgResuMirror, StaleDataForcesPowerLimitsToZero) {
+  current_time = 400000;
+  mqtt_test_reset_subscriptions();
+  ReplayInverter inv;
+  inv.setup();
+  ASSERT_TRUE(inv.enable_mirror("lg/master/sensor/+/state"));
+
+  feed_from_corpus();
+  inv.update_values();
+  ASSERT_TRUE(inv.mirror_is_fresh());
+  ASSERT_GT(inv.mbPV[213], 0) << "precondition: fresh data carries a real charge limit";
+
+  // Advance past the staleness window without delivering anything further.
+  current_time += LgResuPrimeModbusInverter::kMirrorStaleMs + 1000;
+  inv.update_values();
+
+  EXPECT_FALSE(inv.mirror_is_fresh());
+  EXPECT_EQ(inv.mbPV[213], 0) << "stale data must not leave a live charge limit";
+  EXPECT_EQ(inv.mbPV[229], 0) << "nor a live discharge limit";
+  EXPECT_EQ(inv.mbPV[226], 0);
+  EXPECT_EQ(inv.mbPV[211], 0);
+  EXPECT_EQ(inv.mbPV[214], 0);
+
+  // SOC and voltage keep their last values: the pack stays visibly present and healthy,
+  // it simply will not move power. Going silent was the alternative and is documented
+  // in apply_mirror() as the weaker choice.
+  EXPECT_GT(inv.mbPV[221], 0) << "the battery should still look present";
+}
