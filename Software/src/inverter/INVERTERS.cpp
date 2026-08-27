@@ -3,6 +3,7 @@
 #include "AFORE-CAN.h"
 #include "BYD-CAN.h"
 #include "BYD-MODBUS.h"
+#include "LG-RESU-PRIME-MODBUS.h"
 #include "FERROAMP-CAN.h"
 #include "FOXESS-CAN.h"
 #include "GROWATT-HV-CAN.h"
@@ -82,6 +83,8 @@ extern const char* name_for_inverter_type(InverterProtocolType type) {
 
     case InverterProtocolType::BydModbus:
       return BydModbusInverter::Name;
+    case InverterProtocolType::LgResuPrime:
+      return LgResuPrimeModbusInverter::Name;
 
     case InverterProtocolType::FerroampCan:
       return FerroampCanInverter::Name;
@@ -165,6 +168,9 @@ bool setup_inverter() {
 
     case InverterProtocolType::BydModbus:
       inverter = new BydModbusInverter();
+      break;
+    case InverterProtocolType::LgResuPrime:
+      inverter = new LgResuPrimeModbusInverter();
       break;
 
     case InverterProtocolType::FerroampCan:
