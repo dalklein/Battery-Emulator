@@ -44,7 +44,9 @@ class LgResuPrimeModbusInverter : public ModbusInverterProtocol {
   // polling (a graceful shutdown command) and 201 reads 1 roughly 0.7 s later.
   void mirror_config_writes();
 
-  uint16_t state_201 = 3;  // 1 = standby, 3 = active
+  uint16_t state_201 = 1;   // 1 = standby, 3 = active. Starts in standby: the real
+                            // pack cannot be active before the inverter enables it.
+  bool standby_commanded = false;  // latched by 1101 <- 1, released by 1101 <- 3
 
  public:
   /* Synthesising the pack side when there is no DC-DC.

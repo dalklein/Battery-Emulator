@@ -388,3 +388,69 @@ TEST(LgResuMirror, StaleDataForcesPowerLimitsToZero) {
   // in apply_mirror() as the weaker choice.
   EXPECT_GT(inv.mbPV[221], 0) << "the battery should still look present";
 }
+
+// --- 201 state model -------------------------------------------------------
+//
+// Measured against the real pack 2026-08-27, with the inverter off and the 12 V enable
+// LOW: all eight boot writes echoed, and 201 stayed at 1 despite 1101 <- 3. So 201 is not
+// a plain mirror of 1101 -- readiness comes from the enable line.
+
+TEST(LgResuState, StandbyWhileTheInverterHasNotEnabledUs) {
+  ReplayInverter inv;
+  inv.setup();
+  datalayer.system.status.inverter_allows_contactor_closing = false;
+
+  ModbusMessage w(0x0F, 0x06, uint16_t{1101}, uint16_t{3});
+  inv.FC06(w);           // "go active" -- accepted and echoed, as the real pack does
+  inv.update_values();
+
+  EXPECT_EQ(inv.mbPV[201], 1)
+      << "1101 <- 3 must not make the pack active while the inverter has not enabled it";
+}
+
+TEST(LgResuState, GoesActiveOnceEnabledWithoutBeingCommanded) {
+  ReplayInverter inv;
+  inv.setup();
+  datalayer.system.status.inverter_allows_contactor_closing = true;
+  inv.update_values();
+
+  // The real pack reads 201 = 3 at +2.38 s on a cold start, BEFORE the inverter writes
+  // anything -- it goes active on its own once enabled.
+  EXPECT_EQ(inv.mbPV[201], 3) << "an enabled pack reports active without being told to";
+}
+
+TEST(LgResuState, StandbyCommandLatchesAndIsReleasedByGoActive) {
+  ReplayInverter inv;
+  inv.setup();
+  datalayer.system.status.inverter_allows_contactor_closing = true;
+  inv.update_values();
+  ASSERT_EQ(inv.mbPV[201], 3);
+
+  ModbusMessage stop(0x0F, 0x06, uint16_t{1101}, uint16_t{1});
+  inv.FC06(stop);
+  inv.update_values();
+  EXPECT_EQ(inv.mbPV[201], 1) << "1101 <- 1 forces standby; proven on the real pack 4 times";
+
+  // Still enabled, but standby is latched: it must not drift back on its own.
+  inv.update_values();
+  EXPECT_EQ(inv.mbPV[201], 1);
+
+  ModbusMessage go(0x0F, 0x06, uint16_t{1101}, uint16_t{3});
+  inv.FC06(go);
+  inv.update_values();
+  EXPECT_EQ(inv.mbPV[201], 3) << "1101 <- 3 releases the latch";
+}
+
+TEST(LgResuState, LosingEnableDropsBackToStandby) {
+  ReplayInverter inv;
+  inv.setup();
+  datalayer.system.status.inverter_allows_contactor_closing = true;
+  inv.update_values();
+  ASSERT_EQ(inv.mbPV[201], 3);
+
+  // The real enable falls 12.3 s after the inverter stops polling, as its 12 V rail
+  // bleeds down. A pack cannot remain active through that.
+  datalayer.system.status.inverter_allows_contactor_closing = false;
+  inv.update_values();
+  EXPECT_EQ(inv.mbPV[201], 1);
+}

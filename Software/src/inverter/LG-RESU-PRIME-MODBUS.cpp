@@ -103,14 +103,41 @@ void LgResuPrimeModbusInverter::publish_alarms() {
 }
 
 void LgResuPrimeModbusInverter::mirror_config_writes() {
-  // 1101 is the write side of read-register 201. Proven passively: the Delta writes
-  // 1101<-1 about 3 s before it stops polling and 201 follows to 1 ~0.7 s later.
-  // On a cold battery it also writes 1101<-1 then 1101<-3 at +7.18/+7.68 s after boot
-  // ("apply config and go active"), which this mirror reproduces for free.
+  /* 201 is NOT a plain mirror of 1101. Measured against the real pack 2026-08-27:
+   *
+   *   1101 <- 1  DOES force 201 to 1, about 0.7 s later          (proven, 4 captures)
+   *   1101 <- 3  does NOT force 201 to 3                          (proven: written and
+   *              echoed with the 12 V enable LOW, and 201 stayed 1)
+   *
+   * On a cold start the real pack reads 201 = 3 at +2.38 s -- BEFORE the inverter writes
+   * anything -- so it goes active on its own once enabled. The model that fits every
+   * observation is:
+   *
+   *   201 = 3 when the pack is ENABLED and not commanded to standby
+   *   201 = 1 when the enable line is low, or standby was commanded
+   *
+   * So 1101 <- 1 latches standby and 1101 <- 3 only RELEASES it; readiness comes from the
+   * 12 V enable line.
+   *
+   * Readiness is taken from datalayer.system.status.inverter_allows_contactor_closing --
+   * the field that already means "the inverter has given permission" -- rather than
+   * reading the GPIO here. That keeps this protocol independent of how the line is
+   * sensed, and enable_sense can drive the flag by setting enable_sense_drive_datalayer.
+   *
+   * NOTE the flag defaults to TRUE, so with nothing driving it this reports active, which
+   * is the pre-existing behaviour for inverters that do not sense an enable line.
+   */
   auto it = mbPV.find(1101);
-  if (it != mbPV.end() && (it->second == 1 || it->second == 3)) {
-    state_201 = it->second;
+  if (it != mbPV.end()) {
+    if (it->second == 1) {
+      standby_commanded = true;
+    } else if (it->second == 3) {
+      standby_commanded = false;  // released, but readiness still comes from enable
+    }
   }
+
+  const bool enabled = datalayer.system.status.inverter_allows_contactor_closing;
+  state_201 = (enabled && !standby_commanded) ? 3 : 1;
 }
 
 void LgResuPrimeModbusInverter::publish_telemetry() {
