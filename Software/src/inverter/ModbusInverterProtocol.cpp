@@ -83,8 +83,20 @@ ModbusMessage ModbusInverterProtocol::FC06(ModbusMessage request) {
   // Do the write
   mbPV[addr] = val;
 
-  // Set up response
-  response.add(request.getServerID(), request.getFunctionCode(), mbPV[addr]);
+  // Set up response.
+  //
+  // A Modbus FC06 response is a byte-for-byte ECHO of the request:
+  //     [slaveID][0x06][addrHi][addrLo][valHi][valLo]
+  // The previous version omitted the address and returned only
+  //     [slaveID][0x06][valHi][valLo]
+  // which is 4 bytes instead of 6 and is not a valid FC06 response.
+  //
+  // Verified against a real device: an LG RESU10H Prime answering a Delta E6-TL-US
+  // echoes the full request on every fn6 write (21 writes captured 2026-08-26 across
+  // four inverter power cycles, e.g. request 0f0604 4e10 04.. -> identical response).
+  // Masters that validate the echo -- the Delta does -- reject the short form, which
+  // breaks the boot handshake and leaves the battery unconfigured.
+  response.add(request.getServerID(), request.getFunctionCode(), addr, mbPV[addr]);
   return response;
 }
 
