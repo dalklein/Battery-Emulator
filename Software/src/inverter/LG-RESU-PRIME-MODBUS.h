@@ -123,6 +123,14 @@ class LgResuPrimeModbusInverter : public ModbusInverterProtocol {
    */
   static constexpr uint16_t kStaleSocTenthPct = 101;
 
+  /* Discharge-path efficiency of the RESU's DC-DC, in percent, used to derive register 227.
+   *
+   * Measured 2026-08-28 from two live samples 10 % apart in pack voltage: 227/226 = 1.031
+   * in both, i.e. the pack must supply ~3.1 % more than the bus delivers. The charge limit
+   * (226) shows no such factor, which is why only 227 carries it.
+   */
+  static constexpr uint16_t kDischargePathEfficiencyPct = 97;
+
  private:
   bool mirror_on = false;
   void apply_mirror();

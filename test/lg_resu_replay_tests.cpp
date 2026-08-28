@@ -241,6 +241,80 @@ TEST(LgResuReplay, DerivedRegister226MatchesTheRealBattery) {
   EXPECT_GT(checked, 5) << "expected several usable (213,215,226) triples in the corpus";
 }
 
+TEST(LgResuReplay, DerivedRegister227MatchesTheRealBattery) {
+  /* 227 is the max allowed DISCHARGE current on the pack side -- the twin of 226, NOT a
+   * temperature. It was published as temperature_max_dC until 2026-08-28.
+   *
+   * The emulator computes it as 10000 * 214 / (97 * 215): the same P/V form as 226, but
+   * through the converter's discharge-path efficiency, because the pack must supply ~3.1 %
+   * more than the bus delivers. This test drives the module's own code path against the
+   * REAL captured 227 values rather than against that formula restated.
+   */
+  ReplayInverter inv;
+  inv.setup();
+  inv.disable_mirror();
+
+  auto corpus = load_corpus();
+  std::vector<std::pair<uint16_t, uint16_t>> limits;  // (214, 215)
+  std::vector<uint16_t> real227;
+  for (auto& e : corpus) {
+    if (e.fn != 0x03) continue;
+    if (e.start == 213 && e.count == 9) {
+      auto q = payload(e.rsp);
+      // 213x9 covers 213..221: 214 at +1 word, 215 at +2 words.
+      limits.emplace_back((uint16_t)(q[3 + 2] << 8 | q[3 + 3]), (uint16_t)(q[3 + 4] << 8 | q[3 + 5]));
+    } else if (e.start == 222 && e.count == 8) {
+      auto q = payload(e.rsp);
+      // 222x8 covers 222..229: 227 at +5 words.
+      real227.push_back((uint16_t)(q[3 + 10] << 8 | q[3 + 11]));
+    }
+  }
+  ASSERT_FALSE(limits.empty());
+  ASSERT_FALSE(real227.empty());
+
+  const size_t n = std::min(limits.size(), real227.size());
+  int checked = 0;
+  for (size_t i = 0; i < n; i++) {
+    const uint16_t r214 = limits[i].first, r215 = limits[i].second, r227 = real227[i];
+    if (!r215 || !r227) continue;
+
+    datalayer.battery.status.max_discharge_power_W = r214;
+    datalayer.battery.status.voltage_dV = r215;
+    inv.update_values();
+
+    ASSERT_EQ(inv.mbPV[214], r214) << "precondition: 214 must follow the available discharge power";
+    ASSERT_EQ(inv.mbPV[215], r215);
+    EXPECT_NEAR(inv.mbPV[227], r227, 3)
+        << "emulator 227 = " << inv.mbPV[227] << " but the real battery reported " << r227
+        << " for 214=" << r214 << " 215=" << r215;
+    checked++;
+  }
+  EXPECT_GT(checked, 5) << "expected several usable (214,215,227) triples in the corpus";
+}
+
+TEST(LgResuReplay, Register214FollowsAvailableDischargePower) {
+  // 214 is PackMaxAvailableDischargePower -- the dynamic twin of 213, not a third copy of
+  // the 5000 W nameplate. Publishing it static left the emulator with no way to throttle
+  // discharge at all. 211/212/229 stay static; they really are nameplates.
+  ReplayInverter inv;
+  inv.setup();
+  inv.disable_mirror();
+
+  datalayer.battery.status.voltage_dV = 4100;
+  datalayer.battery.status.max_charge_power_W = 5000;
+  datalayer.battery.status.max_discharge_power_W = 5000;
+  inv.update_values();
+  ASSERT_EQ(inv.mbPV[214], 5000);
+  const uint16_t nameplate_212 = inv.mbPV[212], nameplate_229 = inv.mbPV[229];
+
+  datalayer.battery.status.max_discharge_power_W = 1200;
+  inv.update_values();
+  EXPECT_EQ(inv.mbPV[214], 1200) << "214 must track the datalayer, not a constant";
+  EXPECT_EQ(inv.mbPV[213], 5000) << "and it must not drag the CHARGE limit with it";
+  EXPECT_EQ(inv.mbPV[212], nameplate_212) << "212 is a nameplate and must not move";
+  EXPECT_EQ(inv.mbPV[229], nameplate_229) << "229 is the 10 s peak and must not move";
+}
+
 // --- mirror mode -----------------------------------------------------------
 //
 // For milestones 2 and 3 a REAL RESU is still on DC; iot-rpi masters it and republishes
@@ -380,7 +454,11 @@ TEST(LgResuMirror, StaleDataForcesPowerLimitsToZero) {
   EXPECT_FALSE(inv.mirror_is_fresh());
   EXPECT_EQ(inv.mbPV[213], 0) << "stale data must not leave a live charge limit";
   EXPECT_EQ(inv.mbPV[229], 0) << "nor a live discharge limit";
-  EXPECT_EQ(inv.mbPV[226], 0);
+  EXPECT_EQ(inv.mbPV[226], 0) << "pack-side charge current limit";
+  EXPECT_EQ(inv.mbPV[227], 0)
+      << "pack-side DISCHARGE current limit -- missed until 2026-08-28, when 227 was still "
+         "believed to be a temperature. Leaving it live let the degraded state kill charging "
+         "while discharge stayed unlimited.";
   EXPECT_EQ(inv.mbPV[211], 0);
   EXPECT_EQ(inv.mbPV[214], 0);
 

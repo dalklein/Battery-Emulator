@@ -149,14 +149,23 @@ void LgResuPrimeModbusInverter::publish_identity() {
     mbPV[115 + i] = static_cast<uint16_t>((uint8_t)hi << 8 | (uint8_t)lo);
   }
 
-  mbPV[141] = 1;    // unknown, static
-  mbPV[142] = 256;  // unknown, static (0x0100)
+  mbPV[141] = 1;    // Fronius: BlackoutStartEnable
+  mbPV[142] = 256;  // Fronius: InverterType (0x0100)
 
-  // Statics a SolarEdge reads contiguously that the Delta never asks for. Populated
-  // anyway: an emulator must answer the union, and a sparse map silently returns 0.
-  mbPV[101] = 0x0200;  // protocol/format version
-  mbPV[136] = kNameplateCapacityWh;
-  mbPV[137] = 4112;  // 411.2 V -- nominal bus voltage
+  /* Statics a SolarEdge reads contiguously (101-142) that the Delta never asks for.
+   * Populated anyway: an emulator must answer the union, and a sparse map silently
+   * returns 0.
+   *
+   * CORRECTED 2026-08-28. 136 carried the nameplate capacity and 137 a "nominal bus
+   * voltage" of 411.2 V. Per the Fronius LGChemResu map 135/136 are a uint32 BAUD RATE and
+   * 137 is DCDC_HW_Version -- so both were plausible numbers in the wrong registers.
+   * Capacity already lives in 204/205 and bus voltage in 202.
+   */
+  mbPV[101] = 0x0200;      // ProtocolVersion
+  mbPV[135] = 0;           // BaudRate, high word
+  mbPV[136] = 9600;        // BaudRate, low word -- the rate we actually serve
+  mbPV[137] = 0;           // DCDC_HW_Version -- unknown, and not ours to invent
+  mbPV[139] = 0;           // BMS_HW_Version  -- likewise
   mbPV[140] = 1;
 }
 
@@ -239,10 +248,15 @@ void LgResuPrimeModbusInverter::publish_telemetry() {
     mbPV[216] = static_cast<uint16_t>(clamp_i16(b.status.current_dA));
   }
 
-  mbPV[217] = static_cast<uint16_t>(b.status.temperature_max_dC);  // tracks ambient
+  /* The temperature set is TWO registers, not three.
+   *
+   * 227 used to be published here as "the warmest temperature". It is not a temperature at
+   * all -- see publish_limits(), where it now belongs. Retracted 2026-08-28 after the
+   * Fronius LGChemResu map named it DischargeCurrentLimit and our own archive confirmed it.
+   */
+  mbPV[217] = static_cast<uint16_t>(b.status.temperature_max_dC);  // Fronius: BatteryMaxTemperature
   mbPV[218] = 0xFFFF;                                              // -1, "not available" sentinel
-  mbPV[219] = static_cast<uint16_t>(b.status.temperature_min_dC);  // coolest
-  mbPV[227] = static_cast<uint16_t>(b.status.temperature_max_dC);  // warmest
+  mbPV[219] = static_cast<uint16_t>(b.status.temperature_min_dC);  // Fronius: BatteryMinTemperature
 
   mbPV[220] = static_cast<uint16_t>(clamp_i16(b.status.current_dA));  // bus amps, 0.1 A signed
   mbPV[221] = b.status.reported_soc / 10;  // SOC 0.1 % (BE carries 0.01 % pptt)
@@ -259,22 +273,50 @@ void LgResuPrimeModbusInverter::publish_telemetry() {
 void LgResuPrimeModbusInverter::publish_limits() {
   const DATALAYER_BATTERY_TYPE& b = datalayer.battery;
 
-  // 211/212/214 are the pack's CONTINUOUS nameplate; 213 is what it will accept right
-  // now. They are different fields and must not be conflated.
+  /* Four power registers, two roles -- do not conflate them (Fronius LGChemResu names):
+   *
+   *   211 NameplateChargePower        static
+   *   212 NameplateDischargePower     static
+   *   213 PackMaxAvailableChargePower    what the pack will accept RIGHT NOW
+   *   214 PackMaxAvailableDischargePower what it will deliver RIGHT NOW
+   *   229 NameplateMaxDischargePower  the 10 s peak
+   *
+   * 214 was published as a third copy of the continuous nameplate until 2026-08-28. It is
+   * the DISCHARGE twin of 213 and must move with the pack, or the emulator has no way to
+   * throttle discharge at all. Our own pack has never been observed to move it -- the
+   * discharge floor is enforced inverter-side, well above any pack derate -- so this is
+   * corroborated by the vendor map, not yet by our own capture.
+   */
   mbPV[211] = kContinuousPowerW;
   mbPV[212] = kContinuousPowerW;
-  mbPV[214] = kContinuousPowerW;
+  mbPV[229] = kPeakDischargeW;
   mbPV[213] = static_cast<uint16_t>(
       b.status.max_charge_power_W > 65535 ? 65535 : b.status.max_charge_power_W);
-  mbPV[229] = kPeakDischargeW;
+  mbPV[214] = static_cast<uint16_t>(
+      b.status.max_discharge_power_W > 65535 ? 65535 : b.status.max_discharge_power_W);
 
-  // 226 is DERIVED, not stored: the allowed charge current on the PACK side.
-  //     226 == 100 * 213 / 215      (proven: mean error 0.03 A over 314 samples,
-  //                                  vs 19.1 A for the bus-side rival 213/202)
-  // A value inconsistent with 213 and 215 would be self-contradictory in a way a real
-  // LG never is, so it is computed here rather than mapped from a datalayer field.
+  /* 226 and 227 are DERIVED, not stored: the allowed currents on the PACK side.
+   *
+   *   226 == 100 * 213 / 215                (charge)
+   *   227 == 10000 * 214 / (97 * 215)       (discharge, through DC-DC efficiency)
+   *
+   * 226 was proven on our own pack: mean error 0.03 A over 314 samples, against 19.1 A for
+   * the bus-side rival 213/202.
+   *
+   * 227 was published as a temperature until 2026-08-28. Two samples 10 % apart in pack
+   * voltage give 227 x 215 = 5159 W (30.4 A at 169.7 V) and 5156 W (33.5 A at 153.9 V) --
+   * 0.06 % apart, so it is a current limit at a fixed power. It implies a voltage 0.9696 x
+   * 215, i.e. the pack must supply ~3.1 % more than the bus delivers: the converter's
+   * discharge-path efficiency. Hence the 97.
+   *
+   * A value inconsistent with 213/214 and 215 would be self-contradictory in a way a real
+   * LG never is, so both are computed here rather than mapped from a datalayer field.
+   */
   const uint16_t pack_dV = mbPV[215];
   mbPV[226] = pack_dV ? static_cast<uint16_t>((uint32_t)mbPV[213] * 100 / pack_dV) : 0;
+  mbPV[227] = pack_dV ? static_cast<uint16_t>((uint32_t)mbPV[214] * 10000 /
+                                              ((uint32_t)kDischargePathEfficiencyPct * pack_dV))
+                      : 0;
 }
 
 
@@ -432,12 +474,15 @@ void LgResuPrimeModbusInverter::apply_mirror() {
      * frozen SOC with zero limits would leave the discharge floor keyed off a stuck value,
      * defeating the protection entirely.
      */
-    mbPV[213] = 0;  // instantaneous allowed charge
-    mbPV[226] = 0;  // its pack-side current form
+    mbPV[213] = 0;  // available charge power
+    mbPV[214] = 0;  // available discharge power
+    mbPV[226] = 0;  // pack-side charge current limit
+    mbPV[227] = 0;  // pack-side discharge current limit -- MISSED until 2026-08-28, when
+                    // 227 was still believed to be a temperature. Leaving it live meant the
+                    // degraded state killed charging and left discharge unlimited.
     mbPV[229] = 0;  // peak discharge
     mbPV[211] = 0;
     mbPV[212] = 0;
-    mbPV[214] = 0;
 
     // SOC -> 10.1 %, on BOTH registers it can be read from: 221 is the pack's own figure,
     // and SOC = 206 / 205 is what a SolarEdge derives. Letting them disagree would be a
