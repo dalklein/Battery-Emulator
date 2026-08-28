@@ -248,12 +248,12 @@ TEST(LgResuReplay, DerivedRegister226MatchesTheRealBattery) {
 // the host MQTT stub to inject messages exactly as the broker would.
 
 extern void mqtt_test_reset_subscriptions();
-extern int mqtt_test_deliver(const char* topic, const char* payload);
+extern int mqtt_test_deliver(const char* topic, const char* payload, bool retained = false);
 extern size_t mqtt_test_subscription_count();
 extern uint64_t current_time;  // emul/time.cpp -- the host's millis() source
 
 namespace {
-void feed_from_corpus(int max_regs = 1000) {
+void feed_from_corpus(int max_regs = 1000, bool retained = false) {
   // Replay the real battery's register values through MQTT, as the Pi would publish them.
   std::map<uint16_t, uint16_t> regs;
   for (auto& e : load_corpus()) {
@@ -274,7 +274,7 @@ void feed_from_corpus(int max_regs = 1000) {
                       kv.first == 226 || kv.first == 227);
     snprintf(val, sizeof(val), "%d",
              sgn && kv.second > 32767 ? (int)kv.second - 65536 : (int)kv.second);
-    mqtt_test_deliver(topic, val);
+    mqtt_test_deliver(topic, val, retained);
   }
 }
 }  // namespace
@@ -384,10 +384,91 @@ TEST(LgResuMirror, StaleDataForcesPowerLimitsToZero) {
   EXPECT_EQ(inv.mbPV[211], 0);
   EXPECT_EQ(inv.mbPV[214], 0);
 
-  // SOC and voltage keep their last values: the pack stays visibly present and healthy,
-  // it simply will not move power. Going silent was the alternative and is documented
-  // in apply_mirror() as the weaker choice.
-  EXPECT_GT(inv.mbPV[221], 0) << "the battery should still look present";
+  // Voltage keeps its last value: the pack stays visibly present, it simply will not move
+  // power. Going silent was the alternative and is documented in apply_mirror() as the
+  // weaker choice. SOC does NOT keep its last value -- it is forced to 10.1 %, below the
+  // Delta's observed 11 % discharge cut and above the pack's own 8 % protection limit,
+  // because the inverter-side floor is the one lever the Delta is proven to obey.
+  EXPECT_EQ(inv.mbPV[221], 101) << "stale SOC must read 10.1 %, not the last live value";
+  ASSERT_GT(inv.mbPV[205], 0) << "precondition: the corpus carries a full-capacity figure";
+  EXPECT_EQ(inv.mbPV[206], (uint16_t)((uint32_t)inv.mbPV[205] * 101 / 1000))
+      << "206/205 is how a SolarEdge derives SOC; it must agree with 221";
+}
+
+// --- retained-message liveness --------------------------------------------
+//
+// The Pi publishes every register with retain=True, and BE re-subscribes on every MQTT
+// reconnect -- so the broker replays the whole set to it. Arrival must not be mistaken for
+// freshness, or a flapping link with a dead publisher looks permanently alive. But retained
+// data still has to SEED a cold start: an unpopulated mbPV answers reads with 0, and a
+// battery reporting 0 V is a worse lie than a five-minute-old voltage.
+
+TEST(LgResuMirror, RetainedSeedMakesAColdStartServePlausibleValues) {
+  current_time = 500000;
+  mqtt_test_reset_subscriptions();
+  ReplayInverter inv;
+  inv.setup();
+  ASSERT_TRUE(inv.enable_mirror("lg/master/sensor/+/state"));
+
+  // Nothing live has ever arrived -- only the broker's retained backlog.
+  feed_from_corpus(1000, /*retained=*/true);
+  inv.update_values();
+
+  EXPECT_TRUE(inv.mirror_is_fresh())
+      << "the first retained batch must seed the clock, or a cold start serves 0 V";
+  EXPECT_GT(inv.mbPV[202], 3000) << "and it must carry the pack's real bus voltage";
+  EXPECT_GT(inv.mbPV[213], 0) << "with live limits, not the degraded state";
+}
+
+TEST(LgResuMirror, RetainedReplayDoesNotRestartTheClock) {
+  current_time = 600000;
+  mqtt_test_reset_subscriptions();
+  ReplayInverter inv;
+  inv.setup();
+  ASSERT_TRUE(inv.enable_mirror("lg/master/sensor/+/state"));
+
+  feed_from_corpus();  // live data from a healthy master
+  inv.update_values();
+  ASSERT_TRUE(inv.mirror_is_fresh());
+
+  // The master dies. Later, BE's MQTT session flaps and the broker replays everything it
+  // holds retained -- values that have not been refreshed since the last live message.
+  current_time += LgResuPrimeModbusInverter::kMirrorStaleMs - 1000;
+  feed_from_corpus(1000, /*retained=*/true);
+  inv.update_values();
+  EXPECT_TRUE(inv.mirror_is_fresh()) << "still inside the window measured from the live data";
+
+  current_time += 2000;  // now past it -- and the replay must not have deferred this
+  inv.update_values();
+  EXPECT_FALSE(inv.mirror_is_fresh())
+      << "a retained replay is not evidence the master is alive";
+  EXPECT_EQ(inv.mbPV[221], 101) << "so the degraded state must engage on schedule";
+  EXPECT_EQ(inv.mbPV[213], 0);
+}
+
+TEST(LgResuMirror, RepeatedRetainedReplaysCannotHoldOffStalenessForever) {
+  // The pathological case the old code hit: BE reboots while the master is already dead,
+  // so it never sees a live message at all, and a flapping link re-delivers the retained
+  // backlog every couple of minutes. Seeding once is what bounds this.
+  current_time = 700000;
+  mqtt_test_reset_subscriptions();
+  ReplayInverter inv;
+  inv.setup();
+  ASSERT_TRUE(inv.enable_mirror("lg/master/sensor/+/state"));
+
+  feed_from_corpus(1000, /*retained=*/true);
+  inv.update_values();
+  ASSERT_TRUE(inv.mirror_is_fresh());
+
+  for (int flap = 0; flap < 4; flap++) {
+    current_time += LgResuPrimeModbusInverter::kMirrorStaleMs / 2;
+    feed_from_corpus(1000, /*retained=*/true);
+    inv.update_values();
+  }
+
+  EXPECT_FALSE(inv.mirror_is_fresh())
+      << "four reconnects must not add up to indefinite freshness";
+  EXPECT_EQ(inv.mbPV[221], 101);
 }
 
 // --- 201 state model -------------------------------------------------------

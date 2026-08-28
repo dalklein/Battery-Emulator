@@ -302,6 +302,11 @@ constexpr uint16_t kHiBase = 2000, kHiCount = 40;   // 2000..2039
 uint16_t mirror_lo[kLoCount], mirror_hi[kHiCount];
 bool mirror_lo_seen[kLoCount], mirror_hi_seen[kHiCount];
 volatile uint32_t mirror_last_update_ms = 0;
+/* Two guards on the liveness clock, both needed. See mirror_mqtt_handler().
+ *   mirror_seen_live -- a non-retained message has arrived at some point
+ *   mirror_seeded    -- a retained batch has already been allowed to seed the clock once */
+volatile bool mirror_seen_live = false;
+volatile bool mirror_seeded = false;
 // Plain assignment, not ++: incrementing a volatile is deprecated in C++20 and the
 // ESP32 build treats that as an error. We only need "has anything ever arrived".
 volatile bool mirror_any_update = false;
@@ -320,7 +325,8 @@ bool mirror_store(uint16_t reg, uint16_t val) {
   return false;  // outside the read contract; the 1100 config block is not mirrored
 }
 
-void mirror_mqtt_handler(const char* topic, int topic_len, const char* data, int data_len) {
+void mirror_mqtt_handler(const char* topic, int topic_len, const char* data, int data_len,
+                         bool retained) {
   // Expect <anything>/lg_<reg>/state -- pull the register out of the last "lg_" segment.
   int i = topic_len - 1;
   while (i >= 2 && !(topic[i - 2] == 'l' && topic[i - 1] == 'g' && topic[i] == '_')) i--;
@@ -336,10 +342,34 @@ void mirror_mqtt_handler(const char* topic, int topic_len, const char* data, int
   const long v = strtol(buf, nullptr, 10);
   if (v < -32768 || v > 65535) return;
 
-  if (mirror_store(reg, (uint16_t)(v < 0 ? v + 65536 : v))) {
-    mirror_last_update_ms = millis();
-    mirror_any_update = true;
+  if (!mirror_store(reg, (uint16_t)(v < 0 ? v + 65536 : v))) return;
+
+  /* Storing is unconditional; STAMPING THE LIVENESS CLOCK is not.
+   *
+   * The Pi publishes every register retained, which is deliberate: an unpopulated mbPV
+   * answers reads with 0 (std::map::operator[] default-inserts), so a cold start with no
+   * seed would present the Delta a battery at 0 V. Retained data prevents that.
+   *
+   * But the broker also replays every retained topic to a LATE SUBSCRIBER, and BE
+   * re-subscribes on every MQTT_EVENT_CONNECTED. Treating that replay as a fresh update
+   * meant a flapping link with a DEAD publisher looked permanently alive -- the one case
+   * the staleness check exists for. So retained data seeds the clock exactly ONCE, at the
+   * first batch, and every later replay is storage only.
+   *
+   * Live (non-retained) messages always stamp: they are proof the master just read the pack.
+   */
+  if (retained) {
+    // Seed the clock only if nothing live has ever arrived, and only for the first batch.
+    // Both guards are load-bearing: without the first, a replay after a healthy period
+    // defers staleness; without the second, repeated reconnects after a cold start into a
+    // dead master defer it forever.
+    if (mirror_seen_live || mirror_seeded) return;
+    mirror_seeded = true;
+  } else {
+    mirror_seen_live = true;
   }
+  mirror_last_update_ms = millis();
+  mirror_any_update = true;
 }
 
 }  // namespace
@@ -349,6 +379,8 @@ bool LgResuPrimeModbusInverter::enable_mirror(const char* topic_filter) {
   memset(mirror_lo_seen, 0, sizeof(mirror_lo_seen));
   memset(mirror_hi_seen, 0, sizeof(mirror_hi_seen));
   mirror_any_update = false;
+  mirror_seen_live = false;
+  mirror_seeded = false;
   g_mirror_instance = this;
   if (!mqtt_register_subscription(topic_filter, mirror_mqtt_handler)) {
     logging.println("LG mirror: could not register the MQTT subscription");
@@ -394,9 +426,11 @@ void LgResuPrimeModbusInverter::apply_mirror() {
      * the inverter's UI and tells it nothing.
      *
      * Zero limits keep the pack visibly present and healthy while actively asking the
-     * inverter to stop, which is the graceful degradation. A frozen SOC with live limits
-     * is the dangerous case: the inverter enforces its discharge floor from the SOC the
-     * battery reports, so a stuck value defeats that protection entirely.
+     * inverter to stop. But limits are only a REQUEST, and it is unproven that the Delta
+     * obeys them at all -- the droop law says it never commands power in the first place.
+     * The SOC it reads is the one lever it is proven to act on, so that is forced too: a
+     * frozen SOC with zero limits would leave the discharge floor keyed off a stuck value,
+     * defeating the protection entirely.
      */
     mbPV[213] = 0;  // instantaneous allowed charge
     mbPV[226] = 0;  // its pack-side current form
@@ -405,10 +439,20 @@ void LgResuPrimeModbusInverter::apply_mirror() {
     mbPV[212] = 0;
     mbPV[214] = 0;
 
+    // SOC -> 10.1 %, on BOTH registers it can be read from: 221 is the pack's own figure,
+    // and SOC = 206 / 205 is what a SolarEdge derives. Letting them disagree would be a
+    // state no real pack shows.
+    mbPV[221] = kStaleSocTenthPct;
+    auto full = mbPV.find(205);
+    if (full == mbPV.end() || full->second == 0) full = mbPV.find(204);
+    const uint16_t full_Wh =
+        (full != mbPV.end() && full->second) ? full->second : kNameplateCapacityWh;
+    mbPV[206] = static_cast<uint16_t>((uint32_t)full_Wh * kStaleSocTenthPct / 1000);
+
     static uint32_t last_warn = 0;
     if (millis() - last_warn > 10000) {
       last_warn = millis();
-      logging.printf("LG mirror: STALE (%lu ms since last update) -- limits forced to 0\n",
+      logging.printf("LG mirror: STALE (%lu ms since last update) -- limits 0, SOC 10.1%%\n",
                      (unsigned long)(millis() - mirror_last_update_ms));
     }
   }

@@ -79,7 +79,15 @@ bool mqtt_publish(const char* topic, const char* mqtt_msg, bool retain);
  * `filter` may contain MQTT wildcards (+ and #) and must remain valid for the lifetime
  * of the program (a string literal is the intended use).
  */
-typedef void (*MqttTopicHandler)(const char* topic, int topic_len, const char* data, int data_len);
+/* `retained` is the broker's retained flag for this message.
+ *
+ * It matters to any handler that uses arrival as a LIVENESS signal: the broker replays
+ * every retained topic to a late subscriber, so a reconnect delivers a full set of
+ * messages whose data may be arbitrarily old. A handler that stamps a clock on arrival
+ * will read that as "the publisher is alive" when it may be long dead.
+ */
+typedef void (*MqttTopicHandler)(const char* topic, int topic_len, const char* data, int data_len,
+                                 bool retained);
 bool mqtt_register_subscription(const char* filter, MqttTopicHandler handler);
 
 #endif

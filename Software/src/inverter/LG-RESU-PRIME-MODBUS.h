@@ -99,10 +99,29 @@ class LgResuPrimeModbusInverter : public ModbusInverterProtocol {
   void disable_mirror() { mirror_on = false; }
   bool mirror_is_fresh() const;
 
-  // How long mirrored data may go unrefreshed before the emulator stops asking the
-  // inverter to move power. The Pi republishes on change plus a heartbeat, so a gap this
-  // long means the link, the broker, or the master is gone.
-  static constexpr uint32_t kMirrorStaleMs = 15000;
+  /* How long mirrored data may go unrefreshed before the emulator stops asking the
+   * inverter to move power. The Pi republishes on change plus a 5 s heartbeat, so a gap
+   * this long means the link, the broker, or the master is gone -- not a hiccup.
+   *
+   * 5 minutes, not 15 s (user, 2026-08-28): the degraded state below stops the house
+   * discharging, and a WiFi blip or a broker restart must not do that. 60 consecutive
+   * heartbeats have to go missing first.
+   */
+  static constexpr uint32_t kMirrorStaleMs = 300000;
+
+  /* SOC reported once the mirror goes stale, in 0.1 % -- 10.1 % (user, 2026-08-28).
+   *
+   * The one lever the Delta is PROVEN to obey. Measured 2026-08-26: the discharge floor
+   * is enforced inverter-side from the SOC the battery reports, as a hard step to 0 W in
+   * one poll interval, about a point above the Backup SoC setting -- observed cutting at
+   * 11 % with Backup SoC at 10 %.
+   *
+   * 10.1 % is below that cut yet above the pack's own 8 % Protection Limit, so the
+   * BATTERY is never the one asked to fault. It is also a value no real pack reports to a
+   * tenth, so it is a fingerprint in any later capture. The top end needs no equivalent:
+   * the zeroed limits already stopped charging when observed falling at full SOC.
+   */
+  static constexpr uint16_t kStaleSocTenthPct = 101;
 
  private:
   bool mirror_on = false;

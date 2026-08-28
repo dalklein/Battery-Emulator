@@ -37,7 +37,12 @@ bool is_signed(uint16_t reg) {
 
 /* The topic is NOT null-terminated -- esp-mqtt hands over pointer + length. Pull the register
  * out of the last "lg_" segment, the same way the inverter module's mirror handler does. */
-void on_message(const char* topic, int topic_len, const char* data, int data_len) {
+void on_message(const char* topic, int topic_len, const char* data, int data_len,
+                bool retained) {
+  // A retained replay is as good as a live message here: this driver's own staleness check
+  // (source_is_stale) is what decides whether the data may be used, and it does not care
+  // how the value arrived.
+  (void)retained;
   if (!g_instance || !topic || !data) return;
   int i = topic_len - 1;
   while (i >= 2 && !(topic[i - 2] == 'l' && topic[i - 1] == 'g' && topic[i] == '_')) i--;

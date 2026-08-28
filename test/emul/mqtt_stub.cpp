@@ -48,12 +48,13 @@ size_t mqtt_test_subscription_count() {
 }
 
 /** Deliver a message as the broker would, to every matching subscription.
+ *  `retained` models the broker replaying a retained topic to a late subscriber.
  *  Returns how many handlers received it. */
-int mqtt_test_deliver(const char* topic, const char* payload) {
+int mqtt_test_deliver(const char* topic, const char* payload, bool retained) {
   int delivered = 0;
   for (auto& s : subs()) {
     if (mqtt_topic_matches(s.filter.c_str(), topic, (int)strlen(topic))) {
-      s.handler(topic, (int)strlen(topic), payload, (int)strlen(payload));
+      s.handler(topic, (int)strlen(topic), payload, (int)strlen(payload), retained);
       delivered++;
     }
   }

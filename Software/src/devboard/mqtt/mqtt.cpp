@@ -997,7 +997,8 @@ static void subscribe() {
   }
 }
 
-void mqtt_message_received(char* topic_raw, int topic_len, char* data, int data_len) {
+void mqtt_message_received(char* topic_raw, int topic_len, char* data, int data_len,
+                           bool retained) {
 
   // Dispatch to modules that registered their own subscriptions first: those topics are
   // outside the emulator's command tree, and consumers (an inverter mirroring a real
@@ -1005,7 +1006,7 @@ void mqtt_message_received(char* topic_raw, int topic_len, char* data, int data_
   // hot path does not allocate.
   for (size_t i = 0; i < extra_subscription_count; i++) {
     if (mqtt_topic_matches(extra_subscriptions[i].filter, topic_raw, topic_len)) {
-      extra_subscriptions[i].handler(topic_raw, topic_len, data, data_len);
+      extra_subscriptions[i].handler(topic_raw, topic_len, data, data_len, retained);
       return;
     }
   }
@@ -1093,7 +1094,8 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_
       set_event(EVENT_MQTT_DISCONNECT, 0);  // also printing a log entry
       break;
     case MQTT_EVENT_DATA:
-      mqtt_message_received(event->topic, event->topic_len, event->data, event->data_len);
+      mqtt_message_received(event->topic, event->topic_len, event->data, event->data_len,
+                            event->retain);
       break;
     case MQTT_EVENT_ERROR:
       // logging.println("MQTT_ERROR");
