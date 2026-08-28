@@ -5,6 +5,7 @@
 #include "CanBattery.h"
 #include "RS485Battery.h"
 
+#include "LG-RESU-MQTT-BATTERY.h"
 #include "BMW-I3-BATTERY.h"
 #include "BMW-IX-BATTERY.h"
 #include "BMW-PHEV-BATTERY.h"
@@ -193,6 +194,8 @@ const char* name_for_battery_type(BatteryType type) {
       return TeslaBattery::NameSX;
     case BatteryType::TeslaLegacy:
       return TeslaLegacyBattery::Name;
+    case BatteryType::LgResuMqtt:
+      return LgResuMqttBattery::Name;
     case BatteryType::TestFake:
       return TestFakeBattery::Name;
     case BatteryType::ThinkCity:
@@ -319,6 +322,8 @@ Battery* create_battery(BatteryType type) {
       return new TeslaBattery();
     case BatteryType::TeslaLegacy:
       return new TeslaLegacyBattery();
+    case BatteryType::LgResuMqtt:
+      return new LgResuMqttBattery();
     case BatteryType::TestFake:
       return new TestFakeBattery();
     case BatteryType::ThinkCity:

@@ -81,6 +81,8 @@ add_executable(tests
     battery/FordMachETest.cpp
     battery_alive_tests.cpp
     battery/NissanLeafTest.cpp
+    battery/LgResuMqttTest.cpp
+    ../Software/src/battery/LG-RESU-MQTT-BATTERY.cpp
     battery/BydAtto3Test.cpp
     battery/foxess_tests.cpp
     battery/still_alive_tests.cpp

@@ -5,6 +5,7 @@
 #include "../devboard/hal/hal.h"
 #include "../devboard/mqtt/mqtt.h"
 #include "../devboard/utils/enable_sense.h"
+#include "../battery/Battery.h"
 #include "../lib/eModbus-eModbus/RTUutils.h"
 #include "../devboard/utils/logging.h"
 
@@ -111,7 +112,24 @@ bool LgResuPrimeModbusInverter::setup() {
    * the mirror is stale, so all power limits read 0 and the inverter is asked to move
    * nothing -- which is the right state to boot into.
    */
-  enable_mirror(kDefaultMirrorTopic);
+  /* Mirror mode is for milestones 2-3, where a real RESU is still on DC -- EXCEPT when the
+   * LgResuMqtt battery driver is the source.
+   *
+   * That driver already feeds datalayer.battery from the real pack, so the datalayer IS
+   * LG-sourced and the inverter module's normal synthesis path can run against it. Leaving the
+   * mirror on in that configuration would overwrite every synthesized register with the very
+   * values we are trying to check the synthesis against -- a test that cannot fail, and cannot
+   * inform. Disabling it is what makes milestone 3 a real measurement rather than a re-run of
+   * milestone 2 with extra steps.
+   *
+   * Choosing the battery type is therefore the whole switch: pick LgResuMqtt and the emulator
+   * computes its registers; pick anything else and it copies them. */
+  if (user_selected_battery_type == BatteryType::LgResuMqtt) {
+    logging.println("LG RESU: mirror OFF -- registers synthesized from the datalayer "
+                    "(LgResuMqtt battery is the source)");
+  } else {
+    enable_mirror(kDefaultMirrorTopic);
+  }
   return true;
 }
 
