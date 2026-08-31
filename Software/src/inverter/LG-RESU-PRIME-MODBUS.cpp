@@ -262,11 +262,16 @@ void LgResuPrimeModbusInverter::publish_telemetry() {
   mbPV[221] = b.status.reported_soc / 10;  // SOC 0.1 % (BE carries 0.01 % pptt)
   mbPV[225] = b.status.soh_pptt / 10;      // SOH 0.1 %
 
-  mbPV[222] = 0;  // unknown flags; 222 briefly reads 4099 during an inverter reboot
+  mbPV[222] = 0;  // ChargeComplete -- confirmed 2026-08-30 (1 at exactly SOC 100.0 %, twice).
+                  // Still hardcoded 0 here: synthesising it is milestone-3 work. 222 also
+                  // briefly reads 4099 during an inverter reboot, which is not a boolean.
   mbPV[223] = 0;
   mbPV[224] = 1;
   mbPV[228] = 1;
-  mbPV[230] = (b.status.active_power_W != 0) ? 1 : 0;  // DC-DC / contactor enable
+  // 230: written as a guess, CONFIRMED 2026-08-30 -- on the real pack it clears after
+  // ~50 s of exactly zero power and sets again as soon as current flows. This expression
+  // is the right shape; only the ~50 s release delay is missing.
+  mbPV[230] = (b.status.active_power_W != 0) ? 1 : 0;
   mbPV[234] = 0;
 }
 
@@ -499,6 +504,20 @@ void LgResuPrimeModbusInverter::apply_mirror() {
     mbPV[229] = 0;  // peak discharge
     mbPV[211] = 0;
     mbPV[212] = 0;
+
+    /* 222 = ChargeComplete (Fronius name, CONFIRMED on our pack 2026-08-30: it went to 1
+     * the instant SOC reached 100.0 % and 213 fell to 0, twice, and back to 0 when charge
+     * re-enabled). It is inside the mirrored window, so it FREEZES at its last value --
+     * and if the mirror dies while the pack happens to be full, the Delta is told
+     * "charge complete" by a battery simultaneously reporting 10.1 % SOC. No real pack
+     * shows that. Same miss as 227: a register whose meaning was learned after this branch
+     * was written.
+     *
+     * 223 is deliberately NOT forced. If it is the discharge twin, then TRUE is exactly
+     * what a nearly-empty pack should say, and 10.1 % is nearly empty. It has never been
+     * observed non-zero on this pack anyway.
+     */
+    mbPV[222] = 0;
 
     // SOC -> 10.1 %, on BOTH registers it can be read from: 221 is the pack's own figure,
     // and SOC = 206 / 205 is what a SolarEdge derives. Letting them disagree would be a

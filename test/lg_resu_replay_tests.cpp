@@ -507,6 +507,9 @@ TEST(LgResuMirror, StaleDataForcesPowerLimitsToZero) {
   // weaker choice. SOC does NOT keep its last value -- it is forced to 10.1 %, below the
   // Delta's observed 11 % discharge cut and above the pack's own 8 % protection limit,
   // because the inverter-side floor is the one lever the Delta is proven to obey.
+  EXPECT_EQ(inv.mbPV[222], 0)
+      << "ChargeComplete must not stay latched while SOC is forced to 10.1 % -- a pack that "
+         "says 'charge complete' at 10.1 % is a state no real RESU shows";
   EXPECT_EQ(inv.mbPV[221], 101) << "stale SOC must read 10.1 %, not the last live value";
   ASSERT_GT(inv.mbPV[205], 0) << "precondition: the corpus carries a full-capacity figure";
   EXPECT_EQ(inv.mbPV[206], (uint16_t)((uint32_t)inv.mbPV[205] * 101 / 1000))
