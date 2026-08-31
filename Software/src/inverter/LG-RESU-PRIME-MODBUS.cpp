@@ -433,9 +433,22 @@ bool LgResuPrimeModbusInverter::enable_mirror(const char* topic_filter) {
   return true;
 }
 
+uint32_t LgResuPrimeModbusInverter::mirror_age_ms() const {
+  /* mirror_last_update_ms is written by the MQTT callback on the OTHER core. Read it
+   * exactly once here and hand the caller a snapshot.
+   *
+   * Reading it twice is what produced the only STALE line this code has ever logged in
+   * the field (2026-08-29 10:22): apply_mirror() took the stale branch on one read, then
+   * printed a second read taken ~40 lines later, by which time a message had landed and
+   * re-stamped the clock. The log said "STALE (0 ms since last update)" -- both reads
+   * correct, neither the same instant, and the outage's real duration lost.
+   */
+  if (!mirror_any_update) return UINT32_MAX;
+  return millis() - mirror_last_update_ms;
+}
+
 bool LgResuPrimeModbusInverter::mirror_is_fresh() const {
-  if (!mirror_any_update) return false;
-  return (millis() - mirror_last_update_ms) < kMirrorStaleMs;
+  return mirror_age_ms() < kMirrorStaleMs;
 }
 
 void LgResuPrimeModbusInverter::apply_mirror() {
@@ -458,7 +471,10 @@ void LgResuPrimeModbusInverter::apply_mirror() {
    */
   mbPV[201] = state_201;
 
-  if (!mirror_is_fresh()) {
+  /* ONE read of the clock for the decision, the log and the recovery timing alike. */
+  const uint32_t age_ms = mirror_age_ms();
+
+  if (age_ms >= kMirrorStaleMs) {
     /* Stale mirrored data. Report the pack as unable to move power, rather than going
      * silent.
      *
@@ -494,12 +510,25 @@ void LgResuPrimeModbusInverter::apply_mirror() {
         (full != mbPV.end() && full->second) ? full->second : kNameplateCapacityWh;
     mbPV[206] = static_cast<uint16_t>((uint32_t)full_Wh * kStaleSocTenthPct / 1000);
 
+    if (!mirror_was_stale) {
+      mirror_was_stale = true;
+      mirror_stale_began_ms = millis();
+    }
     static uint32_t last_warn = 0;
     if (millis() - last_warn > 10000) {
       last_warn = millis();
       logging.printf("LG mirror: STALE (%lu ms since last update) -- limits 0, SOC 10.1%%\n",
-                     (unsigned long)(millis() - mirror_last_update_ms));
+                     (unsigned long)age_ms);
     }
+  } else if (mirror_was_stale) {
+    /* Falling edge. Without this the log shows a STALE line and then silence, and silence
+     * is ambiguous -- recovered, or simply stopped logging? D1 and D3 both need a
+     * timestamped stale/recovered PAIR to be scoreable at all, which is exactly what
+     * lg_master.py gained on 2026-08-28.
+     */
+    mirror_was_stale = false;
+    logging.printf("LG mirror: recovered after %lu s stale\n",
+                   (unsigned long)((millis() - mirror_stale_began_ms) / 1000));
   }
 }
 

@@ -99,6 +99,12 @@ class LgResuPrimeModbusInverter : public ModbusInverterProtocol {
   void disable_mirror() { mirror_on = false; }
   bool mirror_is_fresh() const;
 
+  /* Milliseconds since the mirror was last refreshed, or UINT32_MAX if nothing has ever
+   * arrived. ONE read of the volatile clock, so a caller that both decides and logs sees
+   * the same instant -- see the snapshot in apply_mirror().
+   */
+  uint32_t mirror_age_ms() const;
+
   /* How long mirrored data may go unrefreshed before the emulator stops asking the
    * inverter to move power. The Pi republishes on change plus a 5 s heartbeat, so a gap
    * this long means the link, the broker, or the master is gone -- not a hiccup.
@@ -134,6 +140,12 @@ class LgResuPrimeModbusInverter : public ModbusInverterProtocol {
  private:
   bool mirror_on = false;
   void apply_mirror();
+
+  // Edge state for the STALE/recovered log pair. Touched only from apply_mirror(), which
+  // runs on the control core, so no synchronisation is needed -- unlike the mirror clock
+  // itself, which the MQTT callback writes from the other core.
+  bool mirror_was_stale = false;
+  uint32_t mirror_stale_began_ms = 0;
 };
 
 #endif

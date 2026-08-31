@@ -435,6 +435,46 @@ TEST(LgResuMirror, IgnoresRegistersOutsideTheReadContract) {
   EXPECT_EQ(inv.mbPV.count(1101), 0u) << "the 1100 config block must not be mirrored back";
 }
 
+/* Regression for the double-read that destroyed the evidence of the only real staleness
+ * event ever logged (2026-08-29 10:22). apply_mirror() decided on one read of the mirror
+ * clock and logged a SECOND read taken ~40 lines later; a message landing in that gap made
+ * the log say "STALE (0 ms since last update)". mirror_age_ms() is now the single read both
+ * use. This test pins the property the log depends on: the age reported must be the age
+ * that crossed the threshold, and it must survive being asked for repeatedly.
+ */
+TEST(LgResuMirror, MirrorAgeIsASnapshotAndAgreesWithFreshness) {
+  current_time = 400000;
+  mqtt_test_reset_subscriptions();
+  ReplayInverter inv;
+  inv.setup();
+  ASSERT_TRUE(inv.enable_mirror("lg/master/sensor/+/state"));
+
+  feed_from_corpus();
+  const uint32_t fresh_age = inv.mirror_age_ms();
+  EXPECT_LT(fresh_age, LgResuPrimeModbusInverter::kMirrorStaleMs);
+  EXPECT_TRUE(inv.mirror_is_fresh()) << "the two must never disagree -- they are one read now";
+
+  current_time += LgResuPrimeModbusInverter::kMirrorStaleMs + 1234;
+  const uint32_t stale_age = inv.mirror_age_ms();
+  EXPECT_GE(stale_age, LgResuPrimeModbusInverter::kMirrorStaleMs)
+      << "the logged age must be the age that actually crossed the threshold, never 0";
+  EXPECT_FALSE(inv.mirror_is_fresh());
+  EXPECT_EQ(stale_age, inv.mirror_age_ms()) << "stable while the clock does not move";
+}
+
+TEST(LgResuMirror, MirrorAgeIsSaturatedBeforeAnythingHasArrived) {
+  current_time = 400000;
+  mqtt_test_reset_subscriptions();
+  ReplayInverter inv;
+  inv.setup();
+  ASSERT_TRUE(inv.enable_mirror("lg/master/sensor/+/state"));
+
+  // Nothing delivered yet. The age must say "never", not report the uptime -- which is what
+  // millis() - 0 would have printed, and would have read as a plausible outage duration.
+  EXPECT_EQ(inv.mirror_age_ms(), UINT32_MAX);
+  EXPECT_FALSE(inv.mirror_is_fresh());
+}
+
 TEST(LgResuMirror, StaleDataForcesPowerLimitsToZero) {
   current_time = 400000;
   mqtt_test_reset_subscriptions();
