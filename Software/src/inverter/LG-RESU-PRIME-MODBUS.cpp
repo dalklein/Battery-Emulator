@@ -268,9 +268,12 @@ void LgResuPrimeModbusInverter::publish_telemetry() {
   mbPV[223] = 0;
   mbPV[224] = 1;
   mbPV[228] = 1;
-  // 230: written as a guess, CONFIRMED 2026-08-30 -- on the real pack it clears after
-  // ~50 s of exactly zero power and sets again as soon as current flows. This expression
-  // is the right shape; only the ~50 s release delay is missing.
+  // 230: UNKNOWN. This is a guess and stays one.
+  //
+  // It was briefly "confirmed" on 2026-08-30 as an idle flag clearing after ~50 s of zero
+  // power -- six transitions in one dawn window at SOC 29 %. RETRACTED 2026-09-01: the pack
+  // then held exactly zero power for 225 consecutive seconds and 230 never left 1. Whatever
+  // it tracks, a zero-power interval is not sufficient to clear it.
   mbPV[230] = (b.status.active_power_W != 0) ? 1 : 0;
   mbPV[234] = 0;
 }
