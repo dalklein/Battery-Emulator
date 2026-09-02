@@ -69,6 +69,16 @@ void LgResuMqttBattery::setup(void) {
   datalayer.battery.info.total_capacity_Wh = 9600;
   datalayer.battery.info.reported_total_capacity_Wh = 9600;
 
+  /* Name the protocol for the dashboard.
+   *
+   * datalayer.system.info.battery_protocol is what the web UI prints as "Battery protocol:",
+   * and every driver has to fill it in itself -- there is no fallback to Name. Omitting it
+   * left the dashboard showing a bare "Battery protocol:" with nothing after it, which reads
+   * as a failed setup rather than a driver that simply never set the string.
+   */
+  strncpy(datalayer.system.info.battery_protocol, Name, 63);
+  datalayer.system.info.battery_protocol[63] = '\0';
+
   g_instance = this;
   if (!mqtt_register_subscription(kDefaultTopic, on_message)) {
     // Same reasoning as the staleness branch: no CAN is involved, and a failed subscription
