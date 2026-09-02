@@ -17,7 +17,8 @@ void feed_healthy(LgResuMqttBattery& b, uint32_t t) {
   b.ingest(220, -252, t);   // -25.2 A bus
   b.ingest(221, 396, t);    // 39.6 % SOC
   b.ingest(225, 1000, t);   // 100.0 % SOH
-  b.ingest(227, 292, t);    // 29.2 C max
+  b.ingest(217, 292, t);    // 29.2 C max -- 217, NOT 227
+  b.ingest(227, 340, t);    // 34.0 A pack discharge limit: must NOT reach a temperature
 }
 
 TEST(LgResuMqtt, MapsRegistersOntoDatalayer) {
@@ -32,7 +33,11 @@ TEST(LgResuMqtt, MapsRegistersOntoDatalayer) {
   EXPECT_EQ(d.status.max_charge_power_W, 5000u);
   EXPECT_EQ(d.status.max_discharge_power_W, 5000u);
   EXPECT_EQ(d.status.temperature_min_dC, 279);
-  EXPECT_EQ(d.status.temperature_max_dC, 292);
+  EXPECT_EQ(d.status.temperature_max_dC, 292);  // from 217
+  // Regression: 227 fed temperature_max_dC until 2026-09-01. It is a discharge
+  // CURRENT limit in 0.1 A, and 340 would have read as a plausible 34.0 C -- which is
+  // why the wrong mapping survived. 227 must not appear as a temperature at all.
+  EXPECT_NE(d.status.temperature_max_dC, 340);
   EXPECT_EQ(d.status.soh_pptt, 10000);
 }
 

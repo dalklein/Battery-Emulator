@@ -315,6 +315,51 @@ TEST(LgResuReplay, Register214FollowsAvailableDischargePower) {
   EXPECT_EQ(inv.mbPV[229], nameplate_229) << "229 is the 10 s peak and must not move";
 }
 
+TEST(LgResuReplay, Register222SignalsChargeCompleteOnlyWhenFullAndRefusingCharge) {
+  /* 222 = ChargeComplete. Confirmed on the real pack 2026-08-30: it went to 1 the instant
+   * SOC reached 100.0 % AND the accepted charge power (213) fell to 0, twice, and back to 0
+   * when charge re-enabled.
+   *
+   * This needs a test precisely because no ordinary capture can catch it wrong. 222 was
+   * hardcoded 0, and the pack sits below 100 % essentially always -- so the emulator matched
+   * the real battery in every sample ever taken and would have contradicted itself only on
+   * the first full charge, reporting a pack that is simultaneously full and still accepting
+   * charge. Both halves of the condition are exercised below for the same reason.
+   */
+  ReplayInverter inv;
+  inv.setup();
+  inv.disable_mirror();
+
+  datalayer.battery.status.voltage_dV = 4100;
+
+  // Mid charge: full neither by SOC nor by refusal.
+  datalayer.battery.status.reported_soc = 5000;  // 50.00 %
+  datalayer.battery.status.max_charge_power_W = 5000;
+  inv.update_values();
+  EXPECT_EQ(inv.mbPV[222], 0);
+
+  // Charge refused, but not full -- a cold pack, not a completed charge.
+  datalayer.battery.status.max_charge_power_W = 0;
+  inv.update_values();
+  EXPECT_EQ(inv.mbPV[222], 0) << "213 == 0 alone is refusal, not completion";
+
+  // Full, but still accepting charge -- CV taper, not yet complete.
+  datalayer.battery.status.reported_soc = 10000;  // 100.00 %
+  datalayer.battery.status.max_charge_power_W = 1200;
+  inv.update_values();
+  EXPECT_EQ(inv.mbPV[222], 0) << "100 % while still accepting charge is not complete";
+
+  // Both: full and refusing.
+  datalayer.battery.status.max_charge_power_W = 0;
+  inv.update_values();
+  EXPECT_EQ(inv.mbPV[222], 1) << "full AND refusing charge is ChargeComplete";
+
+  // And it must clear again when charge re-enables, as the real pack did.
+  datalayer.battery.status.max_charge_power_W = 3000;
+  inv.update_values();
+  EXPECT_EQ(inv.mbPV[222], 0) << "222 must clear when charge re-enables";
+}
+
 // --- mirror mode -----------------------------------------------------------
 //
 // For milestones 2 and 3 a REAL RESU is still on DC; iot-rpi masters it and republishes

@@ -57,9 +57,19 @@ class LgResuMqttBattery : public Battery {
   static constexpr const char* kDefaultTopic = "lg/master/sensor/+/state";
 
   /** No update for this long and the source is considered dead: limits go to zero and the
-   *  battery withdraws permission to close contactors. The republish interval is 5 s, so this
-   *  tolerates two missed cycles. Matches the inverter module's mirror-liveness window. */
-  static constexpr uint32_t kStaleMs = 15000;
+   *  battery withdraws permission to close contactors.
+   *
+   *  5 minutes, matching the inverter module's kMirrorStaleMs -- see the reasoning recorded
+   *  there (user, 2026-08-28): the degraded state stops the house discharging, and a WiFi blip
+   *  or a broker restart must not do that. 60 consecutive 5 s heartbeats have to go missing.
+   *
+   *  ⚠️ WAS 15000 until 2026-09-01, with a comment claiming it matched the inverter module.
+   *  It did when written; the mirror window was widened from 15 s to 5 min three days later
+   *  and this was not moved with it, so the comment silently became false. It matters more
+   *  here than there: this path ALSO withdraws permission to close contactors, which the
+   *  mirror path never did -- and with the mirror off for milestone 3, this is the window
+   *  that governs. */
+  static constexpr uint32_t kStaleMs = 300000;
 
   /** Feed one register in, as the MQTT handler does. Exposed so the mapping can be tested on
    *  the host without an MQTT broker. */

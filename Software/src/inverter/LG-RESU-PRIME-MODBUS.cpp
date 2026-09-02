@@ -262,9 +262,22 @@ void LgResuPrimeModbusInverter::publish_telemetry() {
   mbPV[221] = b.status.reported_soc / 10;  // SOC 0.1 % (BE carries 0.01 % pptt)
   mbPV[225] = b.status.soh_pptt / 10;      // SOH 0.1 %
 
-  mbPV[222] = 0;  // ChargeComplete -- confirmed 2026-08-30 (1 at exactly SOC 100.0 %, twice).
-                  // Still hardcoded 0 here: synthesising it is milestone-3 work. 222 also
-                  // briefly reads 4099 during an inverter reboot, which is not a boolean.
+  /* 222 = ChargeComplete. Synthesised as of milestone 3; hardcoded 0 before that.
+   *
+   * CONFIRMED on our pack 2026-08-30: it went to 1 the instant SOC reached 100.0 % AND the
+   * accepted charge power (213) fell to 0, twice, and back to 0 when charge re-enabled.
+   * Both conditions are required -- 213 alone hits 0 on a cold pack that is merely refusing
+   * charge, which is not "complete".
+   *
+   * A snapshot at any other SOC cannot show this register diverging, which is exactly why it
+   * is easy to leave wrong: the emulator would have looked correct in every capture taken so
+   * far and then contradicted itself on the first full charge, reporting a pack that is
+   * simultaneously 100 % and still accepting charge.
+   *
+   * 222 also briefly reads 4099 during an inverter reboot, which is not a boolean and is not
+   * modelled here.
+   */
+  mbPV[222] = (b.status.reported_soc >= 10000 && b.status.max_charge_power_W == 0) ? 1 : 0;
   mbPV[223] = 0;
   mbPV[224] = 1;
   mbPV[228] = 1;
@@ -534,7 +547,19 @@ void LgResuPrimeModbusInverter::apply_mirror() {
 
     if (!mirror_was_stale) {
       mirror_was_stale = true;
-      mirror_stale_began_ms = millis();
+      /* Stamp when the DATA stopped, not when we noticed it stop.
+       *
+       * millis() here is already kMirrorStaleMs past the last good update, so recording it
+       * makes the recovery line report only the time spent in the degraded state and hide
+       * the whole 5-minute detection window. The live log showed the two side by side and
+       * contradicting each other: "STALE (333103 ms since last update)" one line, "recovered
+       * after 36 s stale" the next -- 36 s and 333 s describing one outage.
+       *
+       * Subtracting age_ms gives the last-known-good instant, so recovery reports the real
+       * gap. That is the number the D-experiments score, and understating it by five
+       * minutes would make a genuine outage look like a blip.
+       */
+      mirror_stale_began_ms = millis() - age_ms;
     }
     static uint32_t last_warn = 0;
     if (millis() - last_warn > 10000) {

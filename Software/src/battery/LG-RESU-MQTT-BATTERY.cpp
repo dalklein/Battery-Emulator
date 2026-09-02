@@ -129,8 +129,19 @@ void LgResuMqttBattery::apply_to(DATALAYER_BATTERY_TYPE& b, uint32_t now_ms) {
   }
   if (have(225)) b.status.soh_pptt = (uint16_t)(get(225) * 10);
 
+  /* The temperature set is 217 (max) and 219 (min) -- TWO registers, not three.
+   *
+   * temperature_max_dC was fed from 227 until 2026-09-01. 227 is NOT a temperature: it is
+   * the pack-side max DISCHARGE current in 0.1 A, retracted 2026-08-28 after 227 x 215 came
+   * out at 5159 W and 5156 W across a 10 % voltage swing, and after 227 = 335 was seen to
+   * exceed 217 = 275 -- a "warmest cell" hotter than the reported pack maximum.
+   *
+   * This mattered precisely because it looked right: 227 = 335 reads as a plausible 33.5 C,
+   * so nothing about the served value would have looked wrong in a capture. The inverter
+   * module derives 227 itself in publish_limits(), so feeding it in here also double-counted.
+   */
+  if (have(217)) b.status.temperature_max_dC = (int16_t)get(217);
   if (have(219)) b.status.temperature_min_dC = (int16_t)get(219);
-  if (have(227)) b.status.temperature_max_dC = (int16_t)get(227);
 
   /* 213 is what the pack will accept RIGHT NOW; 214 is the continuous nameplate. Different
    * fields -- conflating them was an early error worth not repeating. */
