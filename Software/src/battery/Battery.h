@@ -75,6 +75,17 @@ extern bool user_selected_triple_battery;
 
 extern battery_chemistry_enum user_selected_battery_chemistry;
 
+/* How the battery is reached. Mirrors InverterInterfaceType, which the inverter side has
+ * had all along -- safety.cpp guards the INVERTER liveness watchdog on it but ran the
+ * BATTERY one unconditionally, so every non-CAN battery permanently raised
+ * EVENT_CAN_BATTERY_MISSING. That is ERROR level, so system_status latched to FAULT and
+ * safety.cpp then zeroed both power limits, for a battery that was communicating perfectly.
+ *
+ * Defaulted to Can rather than pure virtual: every existing driver is CAN and stays correct
+ * without an edit, and only a non-CAN driver has to say so.
+ */
+enum class BatteryInterfaceType { Can, Rs485, Modbus, Mqtt };
+
 // Abstract base class for next-generation battery implementations.
 // Defines the interface to call battery specific functionality.
 class Battery {
@@ -84,6 +95,10 @@ class Battery {
 
   // The name of the comm interface the battery is using.
   virtual const char* interface_name() = 0;
+
+  // The KIND of interface, for code that must not apply CAN-specific logic to a battery
+  // that does not use CAN. See BatteryInterfaceType.
+  virtual BatteryInterfaceType interface_type() { return BatteryInterfaceType::Can; }
 
   // These are commands from external I/O (UI, MQTT etc.)
   // Override in battery if it supports them. Otherwise they are NOP.

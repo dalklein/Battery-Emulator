@@ -318,10 +318,24 @@ void update_machineryprotection() {
       }
     }
 
-    // Check that the BMS has been seen and is still sending CAN messages.
-    // If we go 60s without messages we raise an error
-    check_can_component_alive(datalayer.battery.status.CAN_battery_still_alive, battery_detected,
-                              EVENT_CAN_BATTERY_DETECTED, EVENT_CAN_BATTERY_MISSING, can_config.battery);
+    /* Check that the BMS has been seen and is still sending CAN messages.
+     * If we go 60s without messages we raise an error.
+     *
+     * ONLY for a battery that actually uses CAN. This ran unconditionally until 2026-09-02,
+     * so a battery on any other interface raised EVENT_CAN_BATTERY_MISSING forever -- an
+     * ERROR, which latches system_status to FAULT, which makes the block at the top of this
+     * function zero max_charge_power_W and max_discharge_power_W. A perfectly healthy MQTT-
+     * sourced battery was reported to the inverter as accepting and delivering 0 W, and
+     * clearing the event did not help because this re-raised it every cycle.
+     *
+     * The inverter watchdog immediately below has always been guarded this way; the battery
+     * side simply never grew the equivalent, because until now every battery was CAN.
+     */
+    if (battery->interface_type() == BatteryInterfaceType::Can) {
+      check_can_component_alive(datalayer.battery.status.CAN_battery_still_alive, battery_detected,
+                                EVENT_CAN_BATTERY_DETECTED, EVENT_CAN_BATTERY_MISSING,
+                                can_config.battery);
+    }
   }
 
   if (inverter && inverter->interface_type() == InverterInterfaceType::Can) {

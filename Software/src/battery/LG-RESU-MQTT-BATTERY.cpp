@@ -71,7 +71,9 @@ void LgResuMqttBattery::setup(void) {
 
   g_instance = this;
   if (!mqtt_register_subscription(kDefaultTopic, on_message)) {
-    set_event(EVENT_CAN_BATTERY_MISSING, 0);
+    // Same reasoning as the staleness branch: no CAN is involved, and a failed subscription
+    // means the values will never be anything but stale.
+    set_event(EVENT_STALE_VALUE, 0);
     logging.println("LG RESU MQTT: could not subscribe -- no state will arrive");
     return;
   }
@@ -102,7 +104,15 @@ void LgResuMqttBattery::apply_to(DATALAYER_BATTERY_TYPE& b, uint32_t now_ms) {
     b.status.max_charge_power_W = 0;
     b.status.max_discharge_power_W = 0;
     if (allows_contactor_closing) *allows_contactor_closing = false;
-    set_event(EVENT_CAN_BATTERY_MISSING, 0);
+    /* EVENT_STALE_VALUE, not EVENT_CAN_BATTERY_MISSING.
+     *
+     * There is no CAN bus anywhere in this driver, so the CAN event was simply the wrong
+     * name for the condition -- it put "Battery not sending messages via CAN for the last
+     * 60 seconds. Check wiring!" on the status page of a system with no battery CAN wiring
+     * to check. EVENT_STALE_VALUE is also ERROR level, so the safe consequence is unchanged:
+     * system_status goes to FAULT and safety.cpp zeroes the power limits.
+     */
+    set_event(EVENT_STALE_VALUE, 0);
     return;
   }
 
@@ -155,6 +165,14 @@ void LgResuMqttBattery::apply_to(DATALAYER_BATTERY_TYPE& b, uint32_t now_ms) {
     b.status.total_discharged_battery_Wh =
         (int32_t)(((uint32_t)get(209) << 16) | (uint32_t)get(210));
 
+  /* Clear the stale event on the way back up.
+   *
+   * The driver only ever RAISED it before. That was survivable while safety.cpp was
+   * re-raising a CAN event every cycle anyway, but with that fixed a single startup gap --
+   * and there is always one, since setup() runs about 5 s before MQTT connects -- would
+   * otherwise leave the system latched in FAULT with both limits at zero for good.
+   */
+  clear_event(EVENT_STALE_VALUE);
   if (allows_contactor_closing) *allows_contactor_closing = true;
 }
 
