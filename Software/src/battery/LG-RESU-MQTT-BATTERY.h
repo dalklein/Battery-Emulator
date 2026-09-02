@@ -52,7 +52,6 @@ class LgResuMqttBattery : public Battery {
   virtual void setup(void);
   virtual void update_values();
   virtual const char* interface_name() { return "MQTT"; }
-  BatteryInterfaceType interface_type() override { return BatteryInterfaceType::Mqtt; }
 
   /** Default topic pattern published by lg_master.py. '+' matches the lg_NNN level. */
   static constexpr const char* kDefaultTopic = "lg/master/sensor/+/state";

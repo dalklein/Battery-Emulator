@@ -183,6 +183,19 @@ void LgResuMqttBattery::apply_to(DATALAYER_BATTERY_TYPE& b, uint32_t now_ms) {
    * otherwise leave the system latched in FAULT with both limits at zero for good.
    */
   clear_event(EVENT_STALE_VALUE);
+
+  /* Take part in the shared liveness heartbeat.
+   *
+   * CAN_battery_still_alive is named for CAN but is really a generic "the battery answered
+   * recently" counter: safety.cpp decrements it every cycle and raises EVENT_CAN_BATTERY_MISSING
+   * when it reaches 0. Every battery driver refreshes it, including the RS485 DalyBms -- this one
+   * did not, so the counter sat at 0, the event was raised on every cycle, system_status latched
+   * to FAULT and safety.cpp zeroed both power limits on a battery that was communicating fine.
+   *
+   * Refreshed only on the healthy path, so a stale source lets the counter decay and the standard
+   * machinery reports the battery as missing on its own. */
+  b.status.CAN_battery_still_alive = CAN_STILL_ALIVE;
+
   if (allows_contactor_closing) *allows_contactor_closing = true;
 }
 

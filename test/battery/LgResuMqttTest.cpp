@@ -120,3 +120,29 @@ TEST(LgResuMqtt, FreshDataAfterStalenessRecovers) {
 }
 
 }  // namespace
+
+// The driver must take part in the shared liveness heartbeat.
+//
+// CAN_battery_still_alive is named for CAN but is a generic "the battery answered recently"
+// counter: safety.cpp decrements it every cycle and raises EVENT_CAN_BATTERY_MISSING at 0,
+// which latches system_status to FAULT and zeroes both power limits. This driver did not
+// refresh it, so a battery that was communicating perfectly was reported to the inverter as
+// accepting and delivering 0 W. Every other driver refreshes it, RS485 DalyBms included.
+TEST(LgResuMqtt, RefreshesTheLivenessCounterWhileTheSourceIsFresh) {
+  LgResuMqttBattery b;
+  DATALAYER_BATTERY_TYPE d{};
+  const uint32_t t = 100000;
+
+  d.status.CAN_battery_still_alive = 0;
+  b.ingest(221, 500, t);
+  b.apply_to(d, t);
+  EXPECT_EQ(d.status.CAN_battery_still_alive, CAN_STILL_ALIVE)
+      << "a fresh source must refresh the heartbeat, or safety.cpp faults the battery";
+
+  // A stale source must NOT refresh it -- the standard machinery then reports the battery
+  // missing on its own, which is the desired outcome.
+  d.status.CAN_battery_still_alive = CAN_STILL_ALIVE;
+  b.apply_to(d, t + LgResuMqttBattery::kStaleMs + 1);
+  EXPECT_EQ(d.status.CAN_battery_still_alive, CAN_STILL_ALIVE)
+      << "apply_to must not touch the counter on the stale path; decay is safety.cpp's job";
+}
