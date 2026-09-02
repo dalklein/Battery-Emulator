@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "../Software/src/battery/BATTERIES.h"
-#include "../Software/src/battery/LG-RESU-MQTT-BATTERY.h"
+#include "../Software/src/battery/DALY-BMS.h"
 #include "../Software/src/charger/CHARGERS.h"
 #include "../Software/src/charger/CanCharger.h"
 #include "../Software/src/datalayer/datalayer.h"
@@ -139,34 +139,18 @@ TEST_F(BatteryAliveTest, ChargerDetectionFiresOnRefresh) {
   EXPECT_EQ(get_event_pointer(EVENT_CAN_CHARGER_DETECTED)->occurences, 1);
 }
 
-/* A battery that does not use CAN must not be policed by the CAN liveness watchdog.
- *
- * THE BUG THIS PINS DOWN. update_machineryprotection() guarded the INVERTER watchdog on
- * inverter->interface_type() == Can from the start, but ran the BATTERY watchdog
- * unconditionally -- correct for as long as every battery was CAN, and silently wrong the
- * moment one was not. CAN_battery_still_alive is never refreshed by a non-CAN driver, so it
- * sits at 0 forever and EVENT_CAN_BATTERY_MISSING is raised every single cycle. That event
- * is ERROR level, so system_status latches to FAULT, and the block at the top of the same
- * function then zeroes max_charge_power_W and max_discharge_power_W.
- *
- * The end result on real hardware: an MQTT-sourced battery that was communicating perfectly
- * -- SOC, voltage and current all updating -- was reported to the inverter as accepting and
- * delivering 0 W, with the status page blaming CAN wiring that does not exist. Clearing the
- * event by hand did nothing, because the watchdog re-raised it on the next cycle.
- */
+// A battery on a non-CAN interface never refreshes CAN_battery_still_alive, so running the
+// CAN liveness check on it raises EVENT_CAN_BATTERY_MISSING every cycle. That is an ERROR,
+// which puts system_status in FAULT, which zeroes both power limits on a healthy battery.
 TEST_F(BatteryAliveTest, NonCanBatteryIsNotPolicedByTheCanWatchdog) {
-  LgResuMqttBattery mqtt_battery;
+  DalyBms rs485_battery;
   Battery* saved = battery;
-  battery = &mqtt_battery;
+  battery = &rs485_battery;
 
-  ASSERT_EQ(battery->interface_type(), BatteryInterfaceType::Mqtt)
-      << "precondition: this battery must declare a non-CAN interface";
+  ASSERT_NE(battery->interface_type(), BatteryInterfaceType::Can);
 
-  /* An explicitly healthy battery, so the only thing under test is the CAN watchdog.
-   * Set rather than inherited from the fixture: the other checks in
-   * update_machineryprotection() zero the limits for undervoltage and cell voltage too, and
-   * a default-constructed datalayer trips them -- which would make this test pass or fail for
-   * reasons that have nothing to do with the guard. */
+  // A healthy battery, so only the CAN watchdog is under test. The other checks in
+  // update_machineryprotection() zero the limits for under/overvoltage too.
   auto& b = datalayer.battery;
   b.info.min_design_voltage_dV = 3500;
   b.info.max_design_voltage_dV = 4500;
@@ -182,7 +166,7 @@ TEST_F(BatteryAliveTest, NonCanBatteryIsNotPolicedByTheCanWatchdog) {
   b.status.real_soc = 5000;
   b.status.active_power_W = 0;
 
-  // Exactly the state a non-CAN battery is permanently in: the CAN counter is never refreshed.
+  // The state a non-CAN battery is permanently in: the CAN counter is never refreshed.
   b.status.CAN_battery_still_alive = 0;
   b.status.max_charge_power_W = 5000;
   b.status.max_discharge_power_W = 5000;
@@ -191,18 +175,14 @@ TEST_F(BatteryAliveTest, NonCanBatteryIsNotPolicedByTheCanWatchdog) {
     update_machineryprotection();
   }
 
-  EXPECT_EQ(get_event_pointer(EVENT_CAN_BATTERY_MISSING)->state, EVENT_STATE_INACTIVE)
-      << "a battery on MQTT has no CAN link to be missing";
-  EXPECT_EQ(datalayer.battery.status.max_charge_power_W, 5000u)
-      << "the spurious CAN fault must not zero the charge limit";
-  EXPECT_EQ(datalayer.battery.status.max_discharge_power_W, 5000u)
-      << "nor the discharge limit";
+  EXPECT_EQ(get_event_pointer(EVENT_CAN_BATTERY_MISSING)->state, EVENT_STATE_INACTIVE);
+  EXPECT_EQ(datalayer.battery.status.max_charge_power_W, 5000u);
+  EXPECT_EQ(datalayer.battery.status.max_discharge_power_W, 5000u);
 
   battery = saved;
 }
 
-// The CAN watchdog must still work for the batteries that do use CAN -- the guard above
-// must not be a blanket disable.
+// The guard above must not disable the check for batteries that do use CAN.
 TEST_F(BatteryAliveTest, CanBatteryIsStillPolicedByTheCanWatchdog) {
   ASSERT_EQ(battery->interface_type(), BatteryInterfaceType::Can);
   datalayer.battery.status.CAN_battery_still_alive = 0;
