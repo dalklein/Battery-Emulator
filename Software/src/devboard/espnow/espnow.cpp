@@ -359,7 +359,7 @@ static void send_system_frame() {
   }
   put_u32_field(ESPNOW_KEY_CPU_FREE_HEAP, datalayer.system.info.CPU_free_heap);
   put_u8_field(ESPNOW_KEY_BATTERY_COUNT, num_batteries);
-  if (WiFi.status() == WL_CONNECTED) {
+  if (wifi_connected()) {
     put_int(ESPNOW_KEY_WIFI_RSSI_DBM, ESPNOW_TYPE_INT, static_cast<uint8_t>(static_cast<int8_t>(WiFi.RSSI())), 1);
     const IPAddress ip = WiFi.localIP();
     const uint8_t ip_bytes[4] = {ip[0], ip[1], ip[2], ip[3]};
@@ -565,7 +565,7 @@ static void send_event_frame(EVENTS_ENUM_TYPE handle, const EVENTS_STRUCT_TYPE* 
   put_enum_field(ESPNOW_KEY_EVENT_SEVERITY, static_cast<uint8_t>(ev->level));
   put_enum_field(ESPNOW_KEY_EVENT_STATE, static_cast<uint8_t>(ev->state));
   put_u8_field(ESPNOW_KEY_EVENT_COUNT, ev->occurences);
-  put_u8_field(ESPNOW_KEY_EVENT_DATA, ev->data);
+  put_i16_field(ESPNOW_KEY_EVENT_DATA_I16, ev->data);
   put_int(ESPNOW_KEY_EVENT_MILLIS, ESPNOW_TYPE_UINT, ev->timestamp, 8);
   put_str_field(ESPNOW_KEY_EVENT_MESSAGE, get_event_message_string(handle).c_str());
 

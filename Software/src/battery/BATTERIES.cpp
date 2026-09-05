@@ -5,11 +5,11 @@
 #include "CanBattery.h"
 #include "RS485Battery.h"
 
+#include "../shunt/BMW-SBOX.h"
 #include "LG-RESU-MQTT-BATTERY.h"
 #include "BMW-I3-BATTERY.h"
 #include "BMW-IX-BATTERY.h"
 #include "BMW-PHEV-BATTERY.h"
-#include "BMW-SBOX.h"
 #include "BOLT-AMPERA-BATTERY.h"
 #include "BYD-ATTO-3-BATTERY.h"
 #include "CELLPOWER-BMS.h"
@@ -356,6 +356,7 @@ bool battery_supports_double(BatteryType type) {
     case BatteryType::CmfaEv:
     case BatteryType::CmpSmartCar:
     case BatteryType::StellantisEcmp:
+    case BatteryType::Kia64FD:
     case BatteryType::KiaHyundai64:
     case BatteryType::MgGen1:
     case BatteryType::Pylon:
@@ -428,10 +429,15 @@ void setup_battery() {
           battery2 = new CmfaEvBattery(&datalayer.battery2, can_config.battery_double);
           break;
         case BatteryType::CmpSmartCar:
-          battery2 = new CmpSmartCarBattery(&datalayer.battery2, nullptr, can_config.battery_double);
+          battery2 = new CmpSmartCarBattery(&datalayer.battery2, can_config.battery_double);
           break;
         case BatteryType::StellantisEcmp:
           battery2 = new EcmpBattery(&datalayer.battery2, can_config.battery_double);
+          break;
+        // Double only: needs a CAN-FD bus of its own, and only two exist.
+        // See the comment on battery_supports_triple() above.
+        case BatteryType::Kia64FD:
+          battery2 = new Kia64FDBattery(&datalayer.battery2, &datalayer_extended.Kia64FD_2, can_config.battery_double);
           break;
         case BatteryType::KiaHyundai64:
           battery2 = new KiaHyundai64Battery(&datalayer.battery2, &datalayer_extended.KiaHyundai64_2,
@@ -453,7 +459,7 @@ void setup_battery() {
                                        &datalayer.system.status.battery2_allowed_contactor_closing);
           break;
         case BatteryType::RenaultZoe1:
-          battery2 = new RenaultZoeGen1Battery(&datalayer.battery2, nullptr, can_config.battery_double);
+          battery2 = new RenaultZoeGen1Battery(&datalayer.battery2, can_config.battery_double);
           break;
         case BatteryType::RenaultZoe2:
           battery2 = new RenaultZoeGen2Battery(&datalayer.battery2, nullptr, can_config.battery_double);
@@ -471,6 +477,7 @@ void setup_battery() {
     }
 
     if (battery2) {
+      battery2->battery_index = 2;
       battery2->setup();
     }
   }
@@ -486,6 +493,9 @@ void setup_battery() {
           break;
         case BatteryType::CmfaEv:
           battery3 = new CmfaEvBattery(&datalayer.battery3, can_config.battery_triple);
+          break;
+        case BatteryType::CmpSmartCar:
+          battery3 = new CmpSmartCarBattery(&datalayer.battery3, can_config.battery_triple);
           break;
         case BatteryType::StellantisEcmp:
           battery3 = new EcmpBattery(&datalayer.battery3, can_config.battery_triple);
@@ -503,6 +513,7 @@ void setup_battery() {
     }
 
     if (battery3) {
+      battery3->battery_index = 3;
       battery3->setup();
     }
   }
@@ -510,6 +521,7 @@ void setup_battery() {
 
 /* User-selected Nissan LEAF settings */
 bool user_selected_LEAF_interlock_mandatory = false;
+uint8_t user_selected_LEAF_chg_sta_rq = 0;
 /* User-selected Tesla settings */
 bool user_selected_tesla_digital_HVIL = false;
 uint16_t user_selected_tesla_GTW_country = 17477;

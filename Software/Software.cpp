@@ -668,6 +668,12 @@ void core_loop(void*) {
         inverter->update_values();
       }
 
+      if (inverter_modbus_watchdog_changed) {
+        // An inverter told us to use a different watchdog period. Storage is done here rather than
+        // in the driver, so no inverter protocol has to depend on NVM.
+        store_settings_inverter_watchdog();
+      }
+
       update_restart_progress();  // Check if we need to restart the ESP32
 
       END_TIME_MEASUREMENT_MAX(values, datalayer.system.status.time_values_us);
@@ -733,10 +739,9 @@ void setup() {
 
   init_stored_settings();
 
-  if (wifi_enabled) {
-    xTaskCreatePinnedToCore((TaskFunction_t)&connectivity_loop, "connectivity_loop", 4096, NULL, TASK_CONNECTIVITY_PRIO,
-                            &connectivity_loop_task, esp32hal->WIFICORE());
-  }
+  // AP-button recovery must always run
+  xTaskCreatePinnedToCore((TaskFunction_t)&connectivity_loop, "connectivity_loop", 4096, NULL, TASK_CONNECTIVITY_PRIO,
+                          &connectivity_loop_task, esp32hal->WIFICORE());
 
   led_init();
 
